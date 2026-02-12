@@ -1,0 +1,32 @@
+site_name: OpenShard Docs
+site_description: Documentação do Framework Orientado a Servidores Voluntários
+site_author: Daniel Ferreira Lara & Dielson Soares de Oliveira Junior
+repo_url: https://github.com/dan-lara/OpenShard
+
+theme:
+  name: material  
+  palette:
+    primary: teal
+    accent: purple
+  features:
+    - navigation.tabs
+    - content.code.copy
+
+nav:
+  - Início: index.md
+  - Arquitetura:
+    - Visão Geral: architecture/overview.md
+    - Controlador (HAProxy): architecture/controller.md
+    - Nó Voluntário (Worker): architecture/worker.md
+    - Protocolo de Túnel: architecture/tunnel.md
+  - Experimentos:
+    - Metodologia: experiments/methodology.md
+    - Resultados Preliminares: experiments/results.md
+  - Tese (PDFs):
+    - Plano de Trabalho (TCC1): tcc1/Plano_de_Trabalho_TCC01.pdf
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed
