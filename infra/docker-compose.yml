@@ -1,0 +1,6 @@
+﻿version: '3.8'
+services:
+  core:
+    image: core-server
+  shard:
+    image: shard-node
