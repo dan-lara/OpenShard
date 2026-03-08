@@ -1,0 +1,15 @@
+[package]
+name = "volunteer-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tunnel-proto = { path = "../tunnel-proto" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio-stream = { workspace = true }

@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package tunnel;
+
+service TunnelService {
+  // Bidirectional stream for the volunteer
+  rpc OpenTunnel(stream TunnelFrame) returns (stream TunnelFrame);
+}
+
+enum FrameType {
+  REGISTER = 0;
+  HEARTBEAT = 1;
+  REQUEST = 2;
+  RESPONSE = 3;
+}
+
+message TunnelFrame {
+  // Uniquely identifies the Volunteer
+  string volunteer_id = 1;
+
+  // Uniquely identifies the HTTP request/response exchange
+  string request_id = 2;
+
+  // Type of the frame (so we know how to decode the payload)
+  FrameType frame_type = 3;
+
+  // Serialized content (empty for REGISTER/HEARTBEAT sometimes, 
+  // contains HttpRequest/HttpResponse for REQUEST/RESPONSE)
+  bytes payload = 4;
+}
+
+// Optional typed payloads we can serialize into the `payload` bytes
+// This makes it easier than using unstructured bytes, though we could
+// also just use unstructured bytes with JSON/bincode.
+// We'll define simple typed messages for protobuf to serialize.
+
+message RegisterPayload {
+  // e.g. Node capabilities, hostname, etc.
+  string hostname = 1;
+}
+
+message HeartbeatPayload {
+  float cpu_usage = 1;
+  uint64 memory_used = 2;
+  uint32 active_requests = 3;
+  float load_average = 4;
+}
+
+message HttpHeaders {
+  map<string, string> headers = 1;
+}
+
+message HttpRequestPayload {
+  string method = 1;
+  string uri = 2;
+  HttpHeaders headers = 3;
+  bytes body = 4;
+}
+
+message HttpResponsePayload {
+  uint32 status = 1;
+  HttpHeaders headers = 2;
+  bytes body = 3;
+}

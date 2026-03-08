@@ -1,0 +1,22 @@
+
+# Rust Compiled Binaries
+target/
+protoc_dir/
+protoc*.zip
+
+# Python Environment
+.venv/
+venv/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Certificates
+*.pem
+*.crt
+*.key
+*.csr
+
+*.log
