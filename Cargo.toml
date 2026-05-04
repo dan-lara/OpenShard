@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "tunnel-proto",
-    "main-server",
-    "volunteer-agent"
+    "experiments/tunnel/tunnel-proto",
+    "experiments/tunnel/main-server",
+    "experiments/tunnel/volunteer-agent"
 ]
 
 [workspace.dependencies]

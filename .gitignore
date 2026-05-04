@@ -20,3 +20,8 @@ __pycache__/
 *.csr
 
 *.log
+
+*.zip
+
+.claude
+CLAUDE.md
