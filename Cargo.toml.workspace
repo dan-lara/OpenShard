@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "experiments/tunnel/tunnel-proto",
+    "experiments/tunnel/main-server",
+    "experiments/tunnel/volunteer-agent",
+    "src/core-server/registrar",
+    "src/core-server/haproxy-manager",
+    "src/shard-node/agent",
+]
+
+[workspace.dependencies]
+tokio = { version = "1.37", features = ["full"] }
+tonic = { version = "0.11", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+prost = "0.12"
+tower = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dashmap = "5.5"
+uuid = { version = "1.8", features = ["v4", "fast-rng"] }
+axum = "0.7"
+tokio-stream = "0.1"
+http-body-util = "0.1"
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
