@@ -1,0 +1,91 @@
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use uuid::Uuid;
+
+// Timeout: volunteer removed after 3 missed heartbeats (45s)
+pub const HEARTBEAT_TIMEOUT_SECS: i64 = 45;
+pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
+
+/// Static info sent once at enrollment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandshakeInfo {
+    pub hostname: String,
+    pub os: String,
+    pub arch: String,
+    pub cpu_cores: u32,
+    pub cpu_model: String,
+    pub memory_total_mb: u64,
+    pub disk_free_gb: u64,
+    pub docker_version: String,
+    pub tunnel_version: String,
+    /// IP:port where the volunteer's service is reachable via tunnel
+    pub service_addr: String,
+}
+
+/// Live metrics updated on every heartbeat
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Metrics {
+    pub cpu_pct: f32,
+    pub mem_pct: f32,
+    pub load_avg: f32,
+    pub active_requests: u32,
+}
+
+impl Metrics {
+    /// Dynamic weight for HAProxy: higher = more capable
+    /// weight = 100 - (cpu_pct * 0.6 + mem_pct * 0.4), clamped to [1, 100]
+    pub fn weight(&self) -> u32 {
+        let score = 100.0 - (self.cpu_pct * 0.6 + self.mem_pct * 0.4);
+        score.clamp(1.0, 100.0) as u32
+    }
+}
+
+/// Full state of a registered volunteer
+#[derive(Debug, Clone, Serialize)]
+pub struct VolunteerState {
+    pub id: Uuid,
+    pub info: HandshakeInfo,
+    pub metrics: Metrics,
+    pub enrolled_at: chrono::DateTime<Utc>,
+    pub last_heartbeat: chrono::DateTime<Utc>,
+}
+
+impl VolunteerState {
+    pub fn is_alive(&self) -> bool {
+        let elapsed = Utc::now()
+            .signed_duration_since(self.last_heartbeat)
+            .num_seconds();
+        elapsed < HEARTBEAT_TIMEOUT_SECS
+    }
+}
+
+/// Shared application state — cloned cheaply via Arc
+#[derive(Clone)]
+pub struct AppState {
+    pub volunteers: Arc<RwLock<HashMap<Uuid, VolunteerState>>>,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            volunteers: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Returns active volunteers sorted by weight descending (best first)
+    pub async fn active_volunteers(&self) -> Vec<VolunteerState> {
+        let map = self.volunteers.read().await;
+        let mut active: Vec<VolunteerState> = map
+            .values()
+            .filter(|v| v.is_alive())
+            .cloned()
+            .collect();
+        active.sort_by(|a, b| {
+            b.metrics.weight().cmp(&a.metrics.weight())
+        });
+        active
+    }
+}
