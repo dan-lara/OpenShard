@@ -1,9 +1,12 @@
 use chrono::Utc;
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+use crate::db::Db;
 
 // Timeout: volunteer removed after 3 missed heartbeats (45s)
 pub const HEARTBEAT_TIMEOUT_SECS: i64 = 45;
@@ -66,12 +69,16 @@ impl VolunteerState {
 #[derive(Clone)]
 pub struct AppState {
     pub volunteers: Arc<RwLock<HashMap<Uuid, VolunteerState>>>,
+    pub db: Db,
+    pub metrics: PrometheusHandle,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(db: Db, metrics: PrometheusHandle) -> Self {
         Self {
             volunteers: Arc::new(RwLock::new(HashMap::new())),
+            db,
+            metrics,
         }
     }
 

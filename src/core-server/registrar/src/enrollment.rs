@@ -64,14 +64,20 @@ pub async fn enroll(
         info: body.info.clone(),
     };
 
-    {
+    state.db.upsert_volunteer(&volunteer).await;
+
+    let active_count = {
         let mut map = state.volunteers.write().await;
         map.insert(id, volunteer);
-    }
+        map.len()
+    };
 
     if let Err(e) = haproxy_manager::add_volunteer("volunteers", id, &body.info.service_addr, 100).await {
         tracing::warn!(volunteer_id = %id, error = %e, "Failed to add volunteer to HAProxy");
     }
+
+    metrics::counter!("openshard_enrollments_total").increment(1);
+    metrics::gauge!("openshard_volunteers_active").set(active_count as f64);
 
     tracing::info!(
         volunteer_id = %id,
@@ -93,29 +99,44 @@ pub async fn heartbeat(
     State(state): State<AppState>,
     Json(body): Json<HeartbeatRequest>,
 ) -> impl IntoResponse {
-    let mut map = state.volunteers.write().await;
+    let updated = {
+        let mut map = state.volunteers.write().await;
+        match map.get_mut(&body.volunteer_id) {
+            None => None,
+            Some(volunteer) => {
+                let m = Metrics {
+                    cpu_pct: body.cpu_pct,
+                    mem_pct: body.mem_pct,
+                    load_avg: body.load_avg,
+                    active_requests: body.active_requests,
+                };
+                let weight = m.weight();
+                volunteer.metrics = m;
+                volunteer.last_heartbeat = Utc::now();
+                Some((volunteer.clone(), weight))
+            }
+        }
+    };
 
-    match map.get_mut(&body.volunteer_id) {
+    match updated {
         None => (
             StatusCode::NOT_FOUND,
             err("Volunteer not found", "VOLUNTEER_NOT_FOUND").into_response(),
         ),
-        Some(volunteer) => {
-            let metrics = Metrics {
-                cpu_pct: body.cpu_pct,
-                mem_pct: body.mem_pct,
-                load_avg: body.load_avg,
-                active_requests: body.active_requests,
-            };
-            let weight = metrics.weight();
-            volunteer.metrics = metrics;
-            volunteer.last_heartbeat = Utc::now();
+        Some((volunteer, weight)) => {
             let id = volunteer.id;
-            drop(map);
+            let hostname = volunteer.info.hostname.clone();
+
+            state.db.upsert_volunteer(&volunteer).await;
 
             if let Err(e) = haproxy_manager::set_weight("volunteers", id, weight).await {
                 tracing::warn!(volunteer_id = %id, error = %e, "Failed to update HAProxy weight");
             }
+
+            metrics::counter!("openshard_heartbeats_total").increment(1);
+            metrics::gauge!("openshard_volunteer_weight", "hostname" => hostname.clone()).set(weight as f64);
+            metrics::gauge!("openshard_volunteer_cpu_pct", "hostname" => hostname.clone()).set(body.cpu_pct as f64);
+            metrics::gauge!("openshard_volunteer_mem_pct", "hostname" => hostname).set(body.mem_pct as f64);
 
             (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })).into_response())
         }
@@ -134,9 +155,11 @@ pub async fn disconnect(
         ),
     };
 
-    let removed = {
+    let (removed, active_count) = {
         let mut map = state.volunteers.write().await;
-        map.remove(&id)
+        let v = map.remove(&id);
+        let count = map.len();
+        (v, count)
     };
 
     match removed {
@@ -145,9 +168,14 @@ pub async fn disconnect(
             err("Volunteer not found", "VOLUNTEER_NOT_FOUND").into_response(),
         ),
         Some(v) => {
+            state.db.remove_volunteer(id).await;
+
             if let Err(e) = haproxy_manager::remove_volunteer("volunteers", id).await {
                 tracing::warn!(volunteer_id = %id, error = %e, "Failed to remove from HAProxy");
             }
+
+            metrics::gauge!("openshard_volunteers_active").set(active_count as f64);
+
             tracing::info!(volunteer_id = %id, hostname = %v.info.hostname, "Volunteer disconnected");
             (
                 StatusCode::OK,

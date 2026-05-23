@@ -12,8 +12,9 @@ HAPROXY_CFG_BACKUP="/etc/haproxy/haproxy.cfg.bak"
 
 echo "==> Starting deploy inside LXC..."
 
-# Create install dir if needed
+# Create install dirs
 mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/data"
 
 # ── Registrar binary ──────────────────────────────────────────────────────────
 echo "==> Stopping registrar..."
@@ -68,6 +69,7 @@ Environment=RUST_LOG=info
 Environment=HAPROXY_CFG=/etc/haproxy/haproxy.cfg
 Environment=HAPROXY_SOCKET=/run/haproxy/admin.sock
 Environment=HAPROXY_PID=/run/haproxy/haproxy.pid
+Environment=OPENSHARD_DB=/opt/openshard/data/openshard.db
 
 [Install]
 WantedBy=multi-user.target

@@ -19,3 +19,7 @@ axum = "0.7"
 thiserror = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 haproxy-manager = { path = "../haproxy-manager" }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+libsqlite3-sys = { version = "0.27", features = ["bundled"] }
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"

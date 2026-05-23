@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: openshard_registrar
+    static_configs:
+      - targets: ['<controller-ip>:3000']
+        labels:
+          instance: controller
+
+  - job_name: haproxy
+    static_configs:
+      - targets: ['<controller-ip>:8405']
+        labels:
+          instance: controller
