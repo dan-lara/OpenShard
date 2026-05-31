@@ -19,6 +19,7 @@ pub struct EnrollRequest {
 #[derive(Debug, Serialize)]
 pub struct EnrollResponse {
     pub volunteer_id: String,
+    pub port_id: u16,
     pub heartbeat_interval_seconds: u64,
 }
 
@@ -42,6 +43,11 @@ fn err(msg: &str, code: &str) -> Json<ErrorResponse> {
         error: msg.to_string(),
         code: code.to_string(),
     })
+}
+
+fn find_free_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?.port())
 }
 
 pub async fn enroll(
@@ -79,9 +85,12 @@ pub async fn enroll(
     metrics::counter!("openshard_enrollments_total").increment(1);
     metrics::gauge!("openshard_volunteers_active").set(active_count as f64);
 
+    let port_id:u16 = find_free_port()?;
+
+
     tracing::info!(
         volunteer_id = %id,
-        hostname = %body.info.hostname,
+        hostname = %format!("localhost:{port_id}"),
         addr = %body.info.service_addr,
         "Volunteer enrolled"
     );
@@ -90,6 +99,7 @@ pub async fn enroll(
         StatusCode::CREATED,
         Json(EnrollResponse {
             volunteer_id: id.to_string(),
+            port_id: port_id,
             heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECS,
         }),
     )

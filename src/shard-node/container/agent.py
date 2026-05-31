@@ -13,16 +13,6 @@ import urllib.request
 import urllib.error
 import shutil
 
-def _local_ip() -> str:
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
 
 # ── Config from environment ───────────────────────────────────────────────────
 REGISTRAR_URL       = os.environ.get("REGISTRAR_URL", "http://localhost:3000")
@@ -123,7 +113,6 @@ def post(path: str, payload: dict) -> dict | None:
 def enroll() -> str | None:
     """Register with the registrar. Returns volunteer_id or None on failure."""
     payload = {
-        "hostname":         HOSTNAME,
         "os":               f"{platform.system()} {platform.release()}",
         "arch":             platform.machine(),
         "cpu_cores":        os.cpu_count() or 1,
@@ -135,12 +124,14 @@ def enroll() -> str | None:
         "service_addr":     SERVICE_ADDR,
     }
 
-    print(f"[agent] Enrolling as {HOSTNAME} → {payload['service_addr']}")
+    print(f"[agent] Enrolling → {payload['service_addr']}")
     resp = post("/enroll", payload)
 
-    if resp and "volunteer_id" in resp:
+    if resp and "port_id" in resp and "volunteer_id" in resp:
+        port_id = resp["port_id"]
         vid = resp["volunteer_id"]
-        print(f"[agent] Enrolled successfully. volunteer_id={vid}")
+        print(f"[agent] Enrolled successfully. port_id={port_id}, vid={vid}")
+        os.environ["TUNNEL_DATA_PORT"] = f"{int(port_id)}"
         return vid
 
     print("[agent] Enrollment failed.")
