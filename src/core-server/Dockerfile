@@ -1,13 +1,25 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — Rust builder
-# Builds both the `registrar` binary and the standalone `tunnel-server` binary.
+# Stage 1 — Rust builder (fully static musl build)
 # ─────────────────────────────────────────────────────────────────────────────
 FROM rust:1.86-bookworm AS builder
+
+RUN rustup target add x86_64-unknown-linux-musl && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Force ALL compilation (including build scripts, which run on the host target)
+# to use musl-gcc so the broken GNU libutil.a is never touched.
+ENV CC=musl-gcc \
+    CC_x86_64_unknown_linux_musl=musl-gcc \
+    CC_x86_64_unknown_linux_gnu=musl-gcc \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=musl-gcc \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 
 WORKDIR /build
 
 # ── dependency cache layer ────────────────────────────────────────────────────
-# Copy manifests only — cargo fetch does not need source files.
 COPY haproxy-manager/Cargo.toml haproxy-manager/Cargo.toml
 COPY registrar/Cargo.toml       registrar/Cargo.toml
 
@@ -18,25 +30,23 @@ RUN cargo fetch --manifest-path registrar/Cargo.toml       2>/dev/null || true
 COPY haproxy-manager/ haproxy-manager/
 COPY registrar/       registrar/
 
-# Build registrar (release)
-RUN cargo build --release --manifest-path registrar/Cargo.toml
+# Build registrar as a fully static binary
+RUN cargo build --release \
+      --manifest-path registrar/Cargo.toml \
+      --target x86_64-unknown-linux-musl
 
-# ── tunnel server (server.rs is a self-contained single-file binary) ──────────
-# server.rs uses `mod proto;` — both files must sit next to each other.
+# ── tunnel server ─────────────────────────────────────────────────────────────
 COPY tunnel/server.rs tunnel/server.rs
 COPY tunnel/proto.rs  tunnel/proto.rs
 
-RUN rustc --edition 2021 -O -o /build/target/release/tunnel-server \
-      tunnel/server.rs \
-      2>&1
+RUN rustc --edition 2021 -O \
+      --target x86_64-unknown-linux-musl \
+      -o /build/tunnel-server \
+      tunnel/server.rs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2 — registrar + HAProxy runtime image
-#
-# Runs:
-#   • haproxy   (managed by supervisord)
-#   • registrar (managed by supervisord)
 # ─────────────────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS registrar
 
@@ -53,10 +63,10 @@ RUN mkdir -p \
         /opt/openshard/data \
         /etc/haproxy
 
-# haproxy.cfg lives inside haproxy-manager/
 COPY haproxy-manager/haproxy.cfg /etc/haproxy/haproxy.cfg
 
-COPY --from=builder /build/target/release/registrar /opt/openshard/registrar
+COPY --from=builder /build/registrar/target/x86_64-unknown-linux-musl/release/registrar \
+                    /opt/openshard/registrar
 RUN chmod +x /opt/openshard/registrar
 
 RUN mkdir -p /etc/supervisor/conf.d
@@ -78,13 +88,8 @@ CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3 — tunnel-server image
 # ─────────────────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS tunnel
+FROM scratch AS tunnel
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/tunnel-server /tunnel-server
 
-COPY --from=builder /build/target/release/tunnel-server /usr/local/bin/tunnel-server
-RUN chmod +x /usr/local/bin/tunnel-server
-
-CMD ["/usr/local/bin/tunnel-server"]
+CMD ["/tunnel-server"]

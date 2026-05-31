@@ -20,7 +20,7 @@ NGINX_PID=$!
 sleep 1
 
 echo "[entrypoint] Starting tunnel..."
-./client
+./client &
 sleep 1
 
 echo "[entrypoint] Starting volunteer agent..."
