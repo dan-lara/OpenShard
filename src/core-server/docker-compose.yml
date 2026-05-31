@@ -1,0 +1,60 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# openshard docker-compose
+#
+# Services:
+#   registrar  — HAProxy + registrar binary (main control plane)
+#   tunnel     — reverse-tunnel server (server.rs)
+#
+# Build targets map to Dockerfile stages:
+#   docker build --target registrar -t openshard/registrar .
+#   docker build --target tunnel    -t openshard/tunnel    .
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── main control-plane container ──────────────────────────────────────────
+  registrar:
+    build:
+      context: .
+      target: registrar
+    image: openshard/registrar:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"       # HAProxy public traffic
+      - "3000:3000"   # Registrar API  (enroll / heartbeat / dispatch / …)
+      - "8405:8405"   # HAProxy Prometheus metrics scrape endpoint
+    volumes:
+      - openshard-data:/opt/openshard/data   # SQLite DB persistence
+    environment:
+      RUST_LOG: "registrar=debug,info"
+      HAPROXY_CFG: "/etc/haproxy/haproxy.cfg"
+      HAPROXY_SOCKET: "/run/haproxy/admin.sock"
+      OPENSHARD_DB: "/opt/openshard/data/openshard.db"
+      # Optional Cloudflare DNS (leave unset to use NoopProvider):
+      # CLOUDFLARE_TOKEN:   "your-token"
+      # CLOUDFLARE_ZONE_ID: "your-zone-id"
+      # BASE_DOMAIN:        "openshrd.example.com"
+      # SERVER_IP:          "1.2.3.4"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/volunteers"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    cap_add:
+      # Needed so HAProxy can bind to privileged ports (<1024) inside the container
+      - NET_BIND_SERVICE
+
+  # ── reverse-tunnel server ─────────────────────────────────────────────────
+  tunnel:
+    build:
+      context: .
+      target: tunnel
+    image: openshard/tunnel:latest
+    restart: unless-stopped
+    network_mode: host
+
+volumes:
+  openshard-data:
