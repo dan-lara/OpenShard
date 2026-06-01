@@ -54,7 +54,10 @@ services:
       target: tunnel
     image: openshard/tunnel:latest
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "9007:9007"
+      - "7007:7007"
+      - "30000-31000:30000-31000"
 
 volumes:
   openshard-data:

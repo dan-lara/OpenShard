@@ -24,7 +24,7 @@ echo "[entrypoint] Starting tunnel..."
 sleep 1
 
 echo "[entrypoint] Starting volunteer agent..."
-python3 /app/agent.py &
+PYTHONUNBUFFERED=1 python3 /app/agent.py &
 AGENT_PID=$!
 
 while kill -0 $NGINX_PID 2>/dev/null && kill -0 $AGENT_PID 2>/dev/null; do

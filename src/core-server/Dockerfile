@@ -1,48 +1,27 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — Rust builder (fully static musl build)
+# Stage 1 — Standard Rust builder (Dynamic GNU build)
 # ─────────────────────────────────────────────────────────────────────────────
 FROM rust:1.86-bookworm AS builder
-
-RUN rustup target add x86_64-unknown-linux-musl && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        musl-tools \
-    && rm -rf /var/lib/apt/lists/*
-
-# Force ALL compilation (including build scripts, which run on the host target)
-# to use musl-gcc so the broken GNU libutil.a is never touched.
-ENV CC=musl-gcc \
-    CC_x86_64_unknown_linux_musl=musl-gcc \
-    CC_x86_64_unknown_linux_gnu=musl-gcc \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=musl-gcc \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
 
 WORKDIR /build
 
 # ── dependency cache layer ────────────────────────────────────────────────────
 COPY haproxy-manager/Cargo.toml haproxy-manager/Cargo.toml
 COPY registrar/Cargo.toml       registrar/Cargo.toml
+COPY tunnel/Cargo.toml          tunnel/Cargo.toml
 
 RUN cargo fetch --manifest-path haproxy-manager/Cargo.toml 2>/dev/null || true
 RUN cargo fetch --manifest-path registrar/Cargo.toml       2>/dev/null || true
+RUN cargo fetch --manifest-path tunnel/Cargo.toml          2>/dev/null || true
 
 # ── copy real source ──────────────────────────────────────────────────────────
 COPY haproxy-manager/ haproxy-manager/
 COPY registrar/       registrar/
+COPY tunnel/          tunnel/
 
-# Build registrar as a fully static binary
-RUN cargo build --release \
-      --manifest-path registrar/Cargo.toml \
-      --target x86_64-unknown-linux-musl
-
-# ── tunnel server ─────────────────────────────────────────────────────────────
-COPY tunnel/server.rs tunnel/server.rs
-COPY tunnel/proto.rs  tunnel/proto.rs
-
-RUN rustc --edition 2021 -O \
-      --target x86_64-unknown-linux-musl \
-      -o /build/tunnel-server \
-      tunnel/server.rs
+# Build dynamically linked binaries (native architecture)
+RUN cargo build --release --manifest-path registrar/Cargo.toml
+RUN cargo build --release --manifest-path tunnel/Cargo.toml
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,19 +37,14 @@ RUN apt-get update && \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p \
-        /run/haproxy \
-        /opt/openshard/data \
-        /etc/haproxy
+RUN mkdir -p /run/haproxy /opt/openshard/data /etc/haproxy /etc/supervisor/conf.d
 
 COPY haproxy-manager/haproxy.cfg /etc/haproxy/haproxy.cfg
-
-COPY --from=builder /build/registrar/target/x86_64-unknown-linux-musl/release/registrar \
-                    /opt/openshard/registrar
-RUN chmod +x /opt/openshard/registrar
-
-RUN mkdir -p /etc/supervisor/conf.d
 COPY docker/supervisord.conf /etc/supervisor/supervisord.conf
+
+# Assuming a Cargo workspace, artifacts map to the root target directory.
+COPY --from=builder /build/registrar/target/release/registrar /opt/openshard/registrar
+RUN chmod +x /opt/openshard/registrar
 
 ENV RUST_LOG=info \
     HAPROXY_CFG=/etc/haproxy/haproxy.cfg \
@@ -86,10 +60,11 @@ CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 3 — tunnel-server image
+# Stage 3 — tunnel-server runtime image
 # ─────────────────────────────────────────────────────────────────────────────
-FROM scratch AS tunnel
+FROM debian:bookworm-slim AS tunnel
 
-COPY --from=builder /build/tunnel-server /tunnel-server
+# Required libraries (libc, libgcc_s, libm) are provided by bookworm-slim.
+COPY --from=builder /build/tunnel/target/release/server /tunnel-server
 
 CMD ["/tunnel-server"]

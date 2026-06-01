@@ -1,3 +1,10 @@
+// src/enrollment.rs
+//
+// The tunnel server now owns port allocation — it assigns a public port to
+// each agent when the control connection is established, and sends it back
+// as 2 bytes.  The registrar no longer needs to find a free port itself;
+// it just records whatever the tunnel server reports.
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -14,12 +21,15 @@ use crate::state::{AppState, HandshakeInfo, Metrics, VolunteerState, HEARTBEAT_I
 pub struct EnrollRequest {
     #[serde(flatten)]
     pub info: HandshakeInfo,
+    /// Public port assigned by the tunnel server for this agent.
+    /// The client reads this from the tunnel server's 2-byte handshake
+    /// response and includes it in the enroll payload.
+    pub tunnel_public_port: u16,
 }
 
 #[derive(Debug, Serialize)]
 pub struct EnrollResponse {
     pub volunteer_id: String,
-    pub port_id: u16,
     pub heartbeat_interval_seconds: u64,
 }
 
@@ -45,17 +55,37 @@ fn err(msg: &str, code: &str) -> Json<ErrorResponse> {
     })
 }
 
-fn find_free_port() -> std::io::Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
-}
-
 pub async fn enroll(
     State(state): State<AppState>,
     Json(body): Json<EnrollRequest>,
 ) -> impl IntoResponse {
     let id = Uuid::new_v4();
     let now = Utc::now();
+
+    let tunnel_host = std::env::var("TUNNEL_HOST").unwrap_or_else(|_| "tunnel".to_string());
+    
+    // Resolve the hostname to an IP address because HAProxy's `add server` 
+    // runtime API requires a strict IP and will fail to route to a hostname.
+    let resolved_ip = match tokio::net::lookup_host(format!("{}:0", tunnel_host)).await {
+        Ok(mut addrs) => {
+            if let Some(addr) = addrs.next() {
+                addr.ip().to_string()
+            } else {
+                tunnel_host.clone()
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to resolve TUNNEL_HOST {}: {}", tunnel_host, e);
+            tunnel_host.clone()
+        }
+    };
+
+    let service_addr = format!("{}:{}", resolved_ip, body.tunnel_public_port);
+    let hostname = service_addr.clone();
+
+    let mut info = body.info.clone();
+    info.hostname = hostname.clone();
+    info.service_addr = service_addr.clone();
 
     let volunteer = VolunteerState {
         id,
@@ -67,31 +97,29 @@ pub async fn enroll(
         },
         enrolled_at: now,
         last_heartbeat: now,
-        info: body.info.clone(),
+        info,
     };
 
     state.db.upsert_volunteer(&volunteer).await;
 
     let active_count = {
         let mut map = state.volunteers.write().await;
-        map.insert(id, volunteer);
+        map.insert(id, volunteer.clone());
         map.len()
     };
 
-    if let Err(e) = haproxy_manager::add_volunteer("volunteers", id, &body.info.service_addr, 100).await {
+    if let Err(e) = haproxy_manager::add_volunteer("volunteers", id, &service_addr, 100).await {
         tracing::warn!(volunteer_id = %id, error = %e, "Failed to add volunteer to HAProxy");
     }
 
     metrics::counter!("openshard_enrollments_total").increment(1);
     metrics::gauge!("openshard_volunteers_active").set(active_count as f64);
 
-    let port_id:u16 = find_free_port()?;
-
-
     tracing::info!(
         volunteer_id = %id,
-        hostname = %format!("localhost:{port_id}"),
-        addr = %body.info.service_addr,
+        hostname = %hostname,
+        addr = %service_addr,
+        tunnel_public_port = body.tunnel_public_port,
         "Volunteer enrolled"
     );
 
@@ -99,7 +127,6 @@ pub async fn enroll(
         StatusCode::CREATED,
         Json(EnrollResponse {
             volunteer_id: id.to_string(),
-            port_id: port_id,
             heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECS,
         }),
     )
@@ -159,10 +186,12 @@ pub async fn disconnect(
 ) -> impl IntoResponse {
     let id = match Uuid::parse_str(&id_str) {
         Ok(u) => u,
-        Err(_) => return (
-            StatusCode::BAD_REQUEST,
-            err("Invalid UUID", "INVALID_ID").into_response(),
-        ),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                err("Invalid UUID", "INVALID_ID").into_response(),
+            )
+        }
     };
 
     let (removed, active_count) = {

@@ -2,6 +2,12 @@
 """
 OpenShard Volunteer Agent
 Handles enrollment and heartbeat with the registrar.
+
+Startup sequence:
+  1. Rust client connects to tunnel server, negotiates data port + public port.
+  2. Rust client writes the assigned public port to /tmp/tunnel_public_port.
+  3. This agent reads that port and includes it in the /enroll payload.
+  4. Heartbeat loop runs until the process exits.
 """
 
 import os
@@ -15,18 +21,20 @@ import shutil
 
 
 # ── Config from environment ───────────────────────────────────────────────────
-REGISTRAR_URL       = os.environ.get("REGISTRAR_URL", "http://localhost:3000")
+REGISTRAR_URL       = os.environ.get("REGISTRAR_URL", "http://host.docker.internal:3000")
 SERVICE_PORT        = int(os.environ.get("SERVICE_PORT", "8080"))
 HEARTBEAT_INTERVAL  = int(os.environ.get("HEARTBEAT_INTERVAL", "15"))
 HOSTNAME            = os.environ.get("HOSTNAME", socket.gethostname())
 TUNNEL_VERSION      = "0.1.0"
 
-volunteer_id = None
+# File the Rust client writes after completing the tunnel handshake.
+TUNNEL_PUBLIC_PORT_FILE = "/tmp/tunnel_public_port"
+# File this agent writes so the Rust client knows which data port to request.
+TUNNEL_DATA_PORT_FILE   = "/tmp/tunnel_data_port"
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 def read_cpu_pct() -> float:
-    """Read CPU usage from /proc/stat over a 500ms window."""
     def read_stat():
         with open("/proc/stat") as f:
             line = f.readline()
@@ -41,34 +49,28 @@ def read_cpu_pct() -> float:
 
     idle_delta  = idle2  - idle1
     total_delta = total2 - total1
-
     if total_delta == 0:
         return 0.0
     return round((1.0 - idle_delta / total_delta) * 100.0, 2)
 
 
 def read_mem_pct() -> float:
-    """Read memory usage from /proc/meminfo."""
     info = {}
     with open("/proc/meminfo") as f:
         for line in f:
             key, val = line.split(":")
             info[key.strip()] = int(val.strip().split()[0])
-
     total     = info.get("MemTotal", 1)
     available = info.get("MemAvailable", 0)
-    used      = total - available
-    return round((used / total) * 100.0, 2)
+    return round(((total - available) / total) * 100.0, 2)
 
 
 def read_load_avg() -> float:
-    """Read 1-minute load average from /proc/loadavg."""
     with open("/proc/loadavg") as f:
         return float(f.read().split()[0])
 
 
 def get_docker_version() -> str:
-    """Return docker version if available, else unknown."""
     if shutil.which("docker"):
         try:
             import subprocess
@@ -80,62 +82,6 @@ def get_docker_version() -> str:
         except Exception:
             pass
     return "unknown"
-
-# ── Last status code tracker ──────────────────────────────────────────────────
-_last_status_code = 0
-
-def last_status_code() -> int:
-    return _last_status_code
-
-# ── HTTP helpers ──────────────────────────────────────────────────────────────
-def post(path: str, payload: dict) -> dict | None:
-    url  = f"{REGISTRAR_URL}{path}"
-    data = json.dumps(payload).encode()
-    req  = urllib.request.Request(
-        url, data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            _last_status_code = resp.status
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        print(f"[agent] HTTP error {e.code} on {path}: {e.read().decode()}")
-    except urllib.error.URLError as e:
-        print(f"[agent] Connection error on {path}: {e.reason}")
-    except Exception as e:
-        print(f"[agent] Unexpected error on {path}: {e}")
-    return None
-
-
-# ── Enrollment ────────────────────────────────────────────────────────────────
-def enroll() -> str | None:
-    """Register with the registrar. Returns volunteer_id or None on failure."""
-    payload = {
-        "os":               f"{platform.system()} {platform.release()}",
-        "arch":             platform.machine(),
-        "cpu_cores":        os.cpu_count() or 1,
-        "cpu_model":        "unknown",
-        "memory_total_mb":  _total_mem_mb(),
-        "disk_free_gb":     _disk_free_gb(),
-        "docker_version":   get_docker_version(),
-        "tunnel_version":   TUNNEL_VERSION,
-        "service_addr":     SERVICE_ADDR,
-    }
-
-    print(f"[agent] Enrolling → {payload['service_addr']}")
-    resp = post("/enroll", payload)
-
-    if resp and "port_id" in resp and "volunteer_id" in resp:
-        port_id = resp["port_id"]
-        vid = resp["volunteer_id"]
-        print(f"[agent] Enrolled successfully. port_id={port_id}, vid={vid}")
-        os.environ["TUNNEL_DATA_PORT"] = f"{int(port_id)}"
-        return vid
-
-    print("[agent] Enrollment failed.")
-    return None
 
 
 def _total_mem_mb() -> int:
@@ -157,17 +103,100 @@ def _disk_free_gb() -> int:
         return 0
 
 
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+# Module-level so post() can update it and last_status_code() can read it.
+_last_status_code = 0
+
+def last_status_code() -> int:
+    return _last_status_code
+
+def post(path: str, payload: dict) -> dict | None:
+    global _last_status_code
+    url  = f"{REGISTRAR_URL}{path}"
+    data = json.dumps(payload).encode()
+    req  = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    print(f"[agent] Outgoing HTTP POST to: {url}")
+    print(f"[agent] Outgoing HTTP Payload: {json.dumps(payload)}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            _last_status_code = resp.status
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        _last_status_code = e.code
+        print(f"[agent] HTTP error {e.code} on {path}: {e.read().decode()}")
+    except urllib.error.URLError as e:
+        print(f"[agent] Connection error on {path}: {e.reason}")
+    except Exception as e:
+        print(f"[agent] Unexpected error on {path}: {e}")
+    return None
+
+
+# ── Tunnel handshake wait ─────────────────────────────────────────────────────
+
+def wait_for_tunnel_public_port() -> int:
+    """
+    Block until the Rust client writes the assigned public port to
+    /tmp/tunnel_public_port, then return it as an int.
+    """
+    print(f"[agent] Waiting for Rust client to complete tunnel handshake…")
+    backoff = 1
+    while True:
+        try:
+            content = open(TUNNEL_PUBLIC_PORT_FILE).read().strip()
+            port = int(content)
+            print(f"[agent] Tunnel handshake complete — public port: {port}")
+            return port
+        except (FileNotFoundError, ValueError):
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 10)
+
+
+# ── Enrollment ────────────────────────────────────────────────────────────────
+
+def enroll(tunnel_public_port: int) -> str | None:
+    """Register with the registrar. Returns volunteer_id or None on failure."""
+    payload = {
+        "os":                platform.system() + " " + platform.release(),
+        "arch":              platform.machine(),
+        "cpu_cores":         os.cpu_count() or 1,
+        "cpu_model":         "unknown",
+        "memory_total_mb":   _total_mem_mb(),
+        "disk_free_gb":      _disk_free_gb(),
+        "docker_version":    get_docker_version(),
+        "tunnel_version":    TUNNEL_VERSION,
+        "service_addr":      f"localhost:{SERVICE_PORT}",
+        "hostname":          HOSTNAME,
+        "tunnel_public_port": tunnel_public_port,
+    }
+
+    print(f"[agent] Enrolling with tunnel_public_port={tunnel_public_port}")
+    resp = post("/enroll", payload)
+
+    if resp and "volunteer_id" in resp:
+        vid = resp["volunteer_id"]
+        print(f"[agent] Enrolled successfully — volunteer_id={vid}")
+        return vid
+
+    print("[agent] Enrollment failed.")
+    return None
+
+
 # ── Heartbeat loop ────────────────────────────────────────────────────────────
-def heartbeat_loop(vid: str):
-    """Send heartbeat every HEARTBEAT_INTERVAL seconds."""
+
+def heartbeat_loop(vid: str, tunnel_public_port: int):
     current_vid = vid
 
     while True:
         time.sleep(HEARTBEAT_INTERVAL)
 
         try:
-            cpu = read_cpu_pct()
-            mem = read_mem_pct()
+            cpu  = read_cpu_pct()
+            mem  = read_mem_pct()
             load = read_load_avg()
         except Exception as e:
             print(f"[agent] Failed to read metrics: {e}")
@@ -188,42 +217,50 @@ def heartbeat_loop(vid: str):
             print(f"[agent] Heartbeat sent — cpu={cpu}% mem={mem}% weight={weight}")
 
         elif last_status_code() == 404:
-            # Registrar lost state (restarted) — re-enroll
-            print(f"[agent] Registrar does not recognize volunteer_id={current_vid} — re-enrolling...")
+            # Registrar lost state (e.g. restarted) — re-enroll.
+            print(f"[agent] Registrar doesn't recognise volunteer_id={current_vid} — re-enrolling…")
             backoff = 2
             new_vid = None
             while new_vid is None:
-                new_vid = enroll()
+                # Re-read the public port in case the tunnel reconnected.
+                try:
+                    tunnel_public_port = int(open(TUNNEL_PUBLIC_PORT_FILE).read().strip())
+                except (FileNotFoundError, ValueError):
+                    pass
+                new_vid = enroll(tunnel_public_port)
                 if new_vid is None:
-                    print(f"[agent] Re-enrollment failed, retrying in {backoff}s...")
+                    print(f"[agent] Re-enrollment failed, retrying in {backoff}s…")
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 30)
             current_vid = new_vid
-            print(f"[agent] Re-enrolled successfully. new volunteer_id={current_vid}")
+            print(f"[agent] Re-enrolled — new volunteer_id={current_vid}")
 
         else:
             print("[agent] Heartbeat failed — registrar unreachable, will retry")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
 def main():
-    global SERVICE_ADDR
-    SERVICE_ADDR = f"{os.environ.get('HOST_IP', _local_ip())}:{SERVICE_PORT}"
     print("[agent] OpenShard Volunteer Agent starting")
     print(f"[agent] Registrar: {REGISTRAR_URL}")
     print(f"[agent] Service:   :{SERVICE_PORT}")
 
-    # Retry enrollment with backoff
+    # Wait for the Rust client to finish the tunnel handshake and tell us
+    # which public port the tunnel server assigned.
+    tunnel_public_port = wait_for_tunnel_public_port()
+
+    # Enroll with the registrar, retrying with backoff on failure.
     backoff = 2
     vid = None
     while vid is None:
-        vid = enroll()
+        vid = enroll(tunnel_public_port)
         if vid is None:
-            print(f"[agent] Retrying enrollment in {backoff}s...")
+            print(f"[agent] Retrying enrollment in {backoff}s…")
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
 
-    heartbeat_loop(vid)
+    heartbeat_loop(vid, tunnel_public_port)
 
 
 if __name__ == "__main__":
