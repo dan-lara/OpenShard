@@ -70,7 +70,22 @@ def read_load_avg() -> float:
         return float(f.read().split()[0])
 
 
+def get_cpu_model() -> str:
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
 def get_docker_version() -> str:
+    # Try docker socket via env var passed from host, or docker CLI if present
+    version = os.environ.get("DOCKER_VERSION")
+    if version:
+        return version
     if shutil.which("docker"):
         try:
             import subprocess
@@ -164,7 +179,7 @@ def enroll(tunnel_public_port: int) -> str | None:
         "os":                platform.system() + " " + platform.release(),
         "arch":              platform.machine(),
         "cpu_cores":         os.cpu_count() or 1,
-        "cpu_model":         "unknown",
+        "cpu_model":         get_cpu_model(),
         "memory_total_mb":   _total_mem_mb(),
         "disk_free_gb":      _disk_free_gb(),
         "docker_version":    get_docker_version(),
