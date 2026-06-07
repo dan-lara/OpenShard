@@ -47,20 +47,31 @@ async fn validate_config() -> Result<()> {
     }
 }
 
-/// Reload HAProxy gracefully via systemd.
+/// Reload HAProxy gracefully via SIGUSR2 to the master process.
 async fn reload_haproxy() -> Result<()> {
-    let status = Command::new("systemctl")
-        .arg("reload")
-        .arg("haproxy")
+    let pid_path = std::env::var("HAPROXY_PID")
+        .unwrap_or_else(|_| "/run/haproxy/haproxy.pid".to_string());
+
+    let pid_str = tokio::fs::read_to_string(&pid_path).await.map_err(|e| {
+        ConfigError::ReloadFailed(format!("cannot read PID file {pid_path}: {e}"))
+    })?;
+
+    let pid: u32 = pid_str.trim().parse().map_err(|_| {
+        ConfigError::ReloadFailed(format!("invalid PID in {pid_path}: {}", pid_str.trim()))
+    })?;
+
+    let status = Command::new("kill")
+        .arg("-USR2")
+        .arg(pid.to_string())
         .status()
         .await?;
 
     if status.success() {
-        tracing::info!("HAProxy reloaded successfully");
+        tracing::info!(pid, "HAProxy reloaded successfully");
         Ok(())
     } else {
         Err(ConfigError::ReloadFailed(format!(
-            "systemctl reload haproxy exited with code {:?}",
+            "kill -USR2 {pid} exited with code {:?}",
             status.code()
         )))
     }

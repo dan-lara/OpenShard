@@ -1,12 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "experiments/tunnel/tunnel-proto",
-    "experiments/tunnel/main-server",
-    "experiments/tunnel/volunteer-agent",
     "src/core-server/haproxy-manager",
     "src/core-server/registrar",
-    "src/shard-node/agent",
 ]
 
 [workspace.dependencies]

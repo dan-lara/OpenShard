@@ -31,7 +31,9 @@ services:
       RUST_LOG: "registrar=debug,info"
       HAPROXY_CFG: "/etc/haproxy/haproxy.cfg"
       HAPROXY_SOCKET: "/run/haproxy/admin.sock"
+      HAPROXY_PID: "/run/haproxy/haproxy.pid"
       OPENSHARD_DB: "/opt/openshard/data/openshard.db"
+      TUNNEL_HOST: "tunnel"
       # Optional Cloudflare DNS (leave unset to use NoopProvider):
       # CLOUDFLARE_TOKEN:   "your-token"
       # CLOUDFLARE_ZONE_ID: "your-zone-id"
