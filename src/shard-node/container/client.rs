@@ -22,11 +22,14 @@ use std::{
 
 // ── configuration ────────────────────────────────────────────────────────────
 
-const SERVER_ADDR:        &str = "host.docker.internal";
 const CONTROL_PORT:       u16  = 9007;
 const LOCAL_SERVICE_ADDR: &str = "127.0.0.1";
 const LOCAL_SERVICE_PORT: u16  = 8080;
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+fn server_addr() -> String {
+    std::env::var("TUNNEL_SERVER").unwrap_or_else(|_| "tunnel".to_string())
+}
 
 /// Written after a successful handshake so the Python agent can enroll.
 const PUBLIC_PORT_FILE: &str = "/tmp/tunnel_public_port";
@@ -34,13 +37,14 @@ const PUBLIC_PORT_FILE: &str = "/tmp/tunnel_public_port";
 // ── entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
+    let server = server_addr();
     println!("[client] reverse-tunnel agent starting");
-    println!("[client]   server       : {SERVER_ADDR}:{CONTROL_PORT}");
+    println!("[client]   server       : {server}:{CONTROL_PORT}");
     println!("[client]   local service: {LOCAL_SERVICE_ADDR}:{LOCAL_SERVICE_PORT}");
 
     loop {
-        println!("[client] connecting to {SERVER_ADDR}:{CONTROL_PORT}…");
-        match TcpStream::connect((SERVER_ADDR, CONTROL_PORT)) {
+        println!("[client] connecting to {server}:{CONTROL_PORT}…");
+        match TcpStream::connect((server.as_str(), CONTROL_PORT)) {
             Err(e) => {
                 println!("[client] connection failed: {e} — retrying in {RECONNECT_DELAY:?}");
                 thread::sleep(RECONNECT_DELAY);
@@ -115,7 +119,8 @@ fn run_session(mut ctrl: TcpStream, data_port: u16) {
 // ── per-stream handler ────────────────────────────────────────────────────────
 
 fn handle_stream(stream_id: u16, data_port: u16) {
-    let mut server_data = match TcpStream::connect((SERVER_ADDR, data_port)) {
+    let server = server_addr();
+    let mut server_data = match TcpStream::connect((server.as_str(), data_port)) {
         Ok(s)  => s,
         Err(e) => { println!("[client] stream {stream_id}: data port connect failed: {e}"); return; }
     };
