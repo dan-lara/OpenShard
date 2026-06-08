@@ -65,11 +65,11 @@ export default function () {
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 export function handleSummary(data) {
-  const reqs     = data.metrics.http_reqs.values.count;
-  const p95      = data.metrics.http_req_duration.values["p(95)"].toFixed(0);
-  const p99      = data.metrics.http_req_duration.values["p(99)"].toFixed(0);
-  const errRate  = (data.metrics.http_req_failed.values.rate * 100).toFixed(2);
-  const rps      = data.metrics.http_reqs.values.rate.toFixed(2);
+  const reqs     = data.metrics.http_reqs?.values?.count ?? 0;
+  const p95      = (data.metrics.http_req_duration?.values?.["p(95)"] ?? 0).toFixed(0);
+  const p99      = (data.metrics.http_req_duration?.values?.["p(99)"] ?? 0).toFixed(0);
+  const errRate  = ((data.metrics.http_req_failed?.values?.rate ?? 0) * 100).toFixed(2);
+  const rps      = (data.metrics.http_reqs?.values?.rate ?? 0).toFixed(2);
 
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("  OpenShard Load Test — Summary");
