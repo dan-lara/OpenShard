@@ -1,6 +1,6 @@
 // src/enrollment.rs
 //
-// The tunnel server now owns port allocation — it assigns a public port to
+// The tunnel server now owns port allocation : it assigns a public port to
 // each agent when the control connection is established, and sends it back
 // as 2 bytes.  The registrar no longer needs to find a free port itself;
 // it just records whatever the tunnel server reports.
@@ -167,7 +167,15 @@ pub async fn heartbeat(
             state.db.upsert_volunteer(&volunteer).await;
 
             if let Err(e) = haproxy_manager::set_weight("volunteers", id, weight).await {
-                tracing::warn!(volunteer_id = %id, error = %e, "Failed to update HAProxy weight");
+                let msg = e.to_string();
+                if msg.contains("No such server") {
+                    // HAProxy lost state (e.g. after restart) : re-add then set weight
+                    if let Err(e2) = haproxy_manager::add_volunteer("volunteers", id, &volunteer.info.service_addr, weight).await {
+                        tracing::warn!(volunteer_id = %id, error = %e2, "Failed to re-add volunteer to HAProxy after missing server");
+                    }
+                } else {
+                    tracing::warn!(volunteer_id = %id, error = %e, "Failed to update HAProxy weight");
+                }
             }
 
             metrics::counter!("openshard_heartbeats_total").increment(1);
