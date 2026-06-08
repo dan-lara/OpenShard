@@ -39,9 +39,10 @@ pub struct Metrics {
 
 impl Metrics {
     /// Dynamic weight for HAProxy: higher = more capable
-    /// weight = 100 - (cpu_pct * 0.6 + mem_pct * 0.4), clamped to [1, 100]
+    /// weight = 100 - (cpu*0.5 + mem*0.3 + active_requests*1.0 capped at 20), clamped to [1, 100]
     pub fn weight(&self) -> u32 {
-        let score = 100.0 - (self.cpu_pct * 0.6 + self.mem_pct * 0.4);
+        let req_pressure = (self.active_requests as f32).min(20.0);
+        let score = 100.0 - (self.cpu_pct * 0.5 + self.mem_pct * 0.3 + req_pressure);
         score.clamp(1.0, 100.0) as u32
     }
 }
