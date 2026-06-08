@@ -80,7 +80,7 @@ async fn reload_haproxy() -> Result<()> {
 /// Build the backend block text for a new service.
 fn backend_block(service_name: &str) -> String {
     format!(
-        "\nbackend {}\n    balance leastconn\n    option httpchk GET /health\n    http-check expect status 200\n",
+        "\nbackend {}\n    balance leastconn\n    option http-server-close\n    option httpchk GET /\n    http-check expect rstatus 2[0-9][0-9]\n    http-response set-header X-Served-By %[srv_name]\n",
         service_name
     )
 }
