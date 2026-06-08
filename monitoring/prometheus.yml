@@ -14,3 +14,9 @@ scrape_configs:
       - targets: ['<controller-ip>:8405']
         labels:
           instance: controller
+
+  - job_name: node_controller
+    static_configs:
+      - targets: ['<controller-ip>:9100']
+        labels:
+          instance: controller

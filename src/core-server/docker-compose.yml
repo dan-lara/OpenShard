@@ -49,6 +49,23 @@ services:
       # Needed so HAProxy can bind to privileged ports (<1024) inside the container
       - NET_BIND_SERVICE
 
+  # ── node exporter — controller system metrics ────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    pid: host
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+
   # ── reverse-tunnel server ─────────────────────────────────────────────────
   tunnel:
     build:
