@@ -98,6 +98,7 @@ pub async fn enroll(
         enrolled_at: now,
         last_heartbeat: now,
         info,
+        assigned_service: None,
     };
 
     state.db.upsert_volunteer(&volunteer).await;

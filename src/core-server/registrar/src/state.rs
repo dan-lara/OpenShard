@@ -1,7 +1,7 @@
 use chrono::Utc;
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -47,6 +47,26 @@ impl Metrics {
     }
 }
 
+/// A service that has been assigned to a volunteer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceAssignment {
+    pub service_name: String,
+    pub domain: String,
+    pub image: String,
+    pub service_port: u16,
+    pub assigned_at: chrono::DateTime<Utc>,
+}
+
+/// A service waiting to be assigned to an available volunteer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingService {
+    pub name: String,
+    pub domain: String,
+    pub image: String,
+    pub service_port: u16,
+    pub registered_at: chrono::DateTime<Utc>,
+}
+
 /// Full state of a registered volunteer
 #[derive(Debug, Clone, Serialize)]
 pub struct VolunteerState {
@@ -55,6 +75,7 @@ pub struct VolunteerState {
     pub metrics: Metrics,
     pub enrolled_at: chrono::DateTime<Utc>,
     pub last_heartbeat: chrono::DateTime<Utc>,
+    pub assigned_service: Option<ServiceAssignment>,
 }
 
 impl VolunteerState {
@@ -70,6 +91,7 @@ impl VolunteerState {
 #[derive(Clone)]
 pub struct AppState {
     pub volunteers: Arc<RwLock<HashMap<Uuid, VolunteerState>>>,
+    pub pending_services: Arc<RwLock<VecDeque<PendingService>>>,
     pub db: Db,
     pub metrics: PrometheusHandle,
 }
@@ -78,6 +100,7 @@ impl AppState {
     pub fn new(db: Db, metrics: PrometheusHandle) -> Self {
         Self {
             volunteers: Arc::new(RwLock::new(HashMap::new())),
+            pending_services: Arc::new(RwLock::new(VecDeque::new())),
             db,
             metrics,
         }

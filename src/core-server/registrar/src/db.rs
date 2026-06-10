@@ -76,6 +76,7 @@ impl TryFrom<DbRow> for VolunteerState {
                 load_avg: r.load_avg as f32,
                 active_requests: r.active_requests as u32,
             },
+            assigned_service: None,
         })
     }
 }
