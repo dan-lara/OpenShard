@@ -28,9 +28,16 @@ pub struct EnrollRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct AssignmentPayload {
+    pub image: String,
+    pub service_port: u16,
+}
+
+#[derive(Debug, Serialize)]
 pub struct EnrollResponse {
     pub volunteer_id: String,
     pub heartbeat_interval_seconds: u64,
+    pub assignment: Option<AssignmentPayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +136,7 @@ pub async fn enroll(
         Json(EnrollResponse {
             volunteer_id: id.to_string(),
             heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECS,
+            assignment: None,
         }),
     )
 }

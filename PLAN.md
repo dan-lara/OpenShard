@@ -216,7 +216,7 @@ code that references them. The verifier in parentheses is what must pass before 
       `insecure-registries` daemon config for controller + volunteer hosts. (docker compose config)
 - [x] 2. `state.rs`: add `ServiceAssignment` and `PendingService` structs, `assigned_service` on
       `VolunteerState`, and `pending_services` queue on `AppState`. (cargo check)
-- [ ] 3. `enrollment.rs` (types only): define `AssignmentPayload`, add
+- [x] 3. `enrollment.rs` (types only): define `AssignmentPayload`, add
       `assignment: Option<AssignmentPayload>` to `EnrollResponse`, and update **every existing
       `EnrollResponse` construction site** to pass `assignment: None`. (cargo check)
 - [ ] 4. `db.rs`: add the `service_assignments` table and insert/load helpers. (cargo check)
