@@ -99,6 +99,8 @@ impl TryFrom<DbRow> for VolunteerState {
                 active_requests: r.active_requests as u32,
             },
             assigned_service: None,
+            service_running: None,
+            service_image: None,
         })
     }
 }

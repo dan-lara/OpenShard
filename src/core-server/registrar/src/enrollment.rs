@@ -47,6 +47,10 @@ pub struct HeartbeatRequest {
     pub mem_pct: f32,
     pub load_avg: f32,
     pub active_requests: u32,
+    #[serde(default)]
+    pub service_running: Option<bool>,
+    #[serde(default)]
+    pub service_image: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,6 +110,8 @@ pub async fn enroll(
         last_heartbeat: now,
         info,
         assigned_service: None,
+        service_running: None,
+        service_image: None,
     };
 
     // Dequeue a pending service and assign it to this volunteer if one is available.
@@ -205,6 +211,12 @@ pub async fn heartbeat(
                 let weight = m.weight();
                 volunteer.metrics = m;
                 volunteer.last_heartbeat = Utc::now();
+                if body.service_running.is_some() {
+                    volunteer.service_running = body.service_running;
+                }
+                if body.service_image.is_some() {
+                    volunteer.service_image = body.service_image.clone();
+                }
                 Some((volunteer.clone(), weight))
             }
         }

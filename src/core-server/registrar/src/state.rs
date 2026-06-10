@@ -76,6 +76,8 @@ pub struct VolunteerState {
     pub enrolled_at: chrono::DateTime<Utc>,
     pub last_heartbeat: chrono::DateTime<Utc>,
     pub assigned_service: Option<ServiceAssignment>,
+    pub service_running: Option<bool>,
+    pub service_image: Option<String>,
 }
 
 impl VolunteerState {

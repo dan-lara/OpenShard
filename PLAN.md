@@ -227,7 +227,7 @@ code that references them. The verifier in parentheses is what must pass before 
 - [x] 7. `enrollment.rs` (logic): on enroll, dequeue a `PendingService`, call `assign_service` with
       `127.0.0.1:<tunnel_public_port>`, persist via `db.rs`, set `assigned_service`, and populate
       `assignment` in the response. (cargo check)
-- [ ] 8. Registrar: accept `service_running` / `service_image` fields in the heartbeat handler and
+- [x] 8. Registrar: accept `service_running` / `service_image` fields in the heartbeat handler and
       store them on `VolunteerState`. (cargo check)
 - [ ] 9. Dashboard: show the assigned service (name + image + running status) per volunteer. (cargo check)
 - [ ] 10. `client.rs`: read `LOCAL_SERVICE_ADDR` from env/file at startup instead of the hardcoded
