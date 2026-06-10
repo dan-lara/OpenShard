@@ -229,7 +229,7 @@ code that references them. The verifier in parentheses is what must pass before 
       `assignment` in the response. (cargo check)
 - [x] 8. Registrar: accept `service_running` / `service_image` fields in the heartbeat handler and
       store them on `VolunteerState`. (cargo check)
-- [ ] 9. Dashboard: show the assigned service (name + image + running status) per volunteer. (cargo check)
+- [x] 9. Dashboard: show the assigned service (name + image + running status) per volunteer. (cargo check)
 - [ ] 10. `client.rs`: read `LOCAL_SERVICE_ADDR` from env/file at startup instead of the hardcoded
       `127.0.0.1`; support a restart/reload so a new address takes effect. (cargo check)
 - [ ] 11. `agent.py`: implement `run_service(image, service_port)` (idempotent, no published ports,

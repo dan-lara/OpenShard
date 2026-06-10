@@ -1,4 +1,5 @@
 mod churn;
+mod dashboard;
 mod db;
 mod dispatch;
 mod enrollment;
@@ -72,6 +73,7 @@ async fn main() {
     tokio::spawn(churn::run_churn_monitor(state.clone()));
 
     let app = Router::new()
+        .route("/", get(dashboard::dashboard))
         .route("/enroll", post(enrollment::enroll))
         .route("/heartbeat", post(enrollment::heartbeat))
         .route("/enroll/:id", delete(enrollment::disconnect))
