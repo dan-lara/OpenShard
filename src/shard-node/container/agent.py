@@ -38,6 +38,10 @@ LOCAL_SERVICE_ADDR_FILE = "/tmp/tunnel_local_addr"
 # Set after enrollment; used by run_service() to name the service container.
 VOLUNTEER_ID: str = ""
 
+# Tracked after run_service(); reported in heartbeat.
+_service_container_id: str = ""
+_service_image: str = ""
+
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 def read_cpu_pct() -> float:
@@ -127,19 +131,36 @@ def _disk_free_gb() -> int:
 
 def run_service(image: str, service_port: int) -> str:
     """Pull and run service container (no published ports). Idempotent. Returns container IP."""
+    global _service_container_id, _service_image
     name = f"svc_{VOLUNTEER_ID}"
     subprocess.run(["docker", "rm", "-f", name],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["docker", "pull", image], check=True)
-    subprocess.run([
+    run_result = subprocess.run([
         "docker", "run", "-d", "--restart", "unless-stopped", "--name", name, image
-    ], check=True)
+    ], capture_output=True, text=True, check=True)
+    _service_container_id = run_result.stdout.strip()
+    _service_image = image
     ip = subprocess.run(
         ["docker", "inspect", "-f",
          "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     return ip
+
+
+def _service_is_running() -> bool:
+    """Check if the tracked service container is currently running."""
+    if not _service_container_id:
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", _service_container_id],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except Exception:
+        return False
 
 
 def _restart_tunnel_client() -> int:
@@ -275,6 +296,8 @@ def heartbeat_loop(vid: str, tunnel_public_port: int):
             "mem_pct":         mem,
             "load_avg":        load,
             "active_requests": 0,
+            "service_running": _service_is_running(),
+            "service_image":   _service_image or None,
         }
 
         resp = post("/heartbeat", payload)
