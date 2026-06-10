@@ -75,5 +75,19 @@ services:
     restart: unless-stopped
     network_mode: host
 
+  # ── Docker image registry (plain HTTP, internal only) ─────────────────────
+  # Owners push images here:  docker push 10.10.10.10:5000/<image>:latest
+  # Required on controller AND every volunteer host — add to /etc/docker/daemon.json:
+  #   { "insecure-registries": ["10.10.10.10:5000"] }
+  # then: sudo systemctl restart docker
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry-data:/var/lib/registry
+
 volumes:
   openshard-data:
+  registry-data:
