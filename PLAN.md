@@ -234,7 +234,7 @@ code that references them. The verifier in parentheses is what must pass before 
       `127.0.0.1`; support a restart/reload so a new address takes effect. (cargo check)
 - [x] 11. `agent.py`: implement `run_service(image, service_port)` (idempotent, no published ports,
       returns container IP); set `LOCAL_SERVICE_ADDR` and (re)start the tunnel client. (docker build)
-- [ ] 12. `agent.py`: handle `assignment` in the enroll response → call `run_service`. (docker build)
+- [x] 12. `agent.py`: handle `assignment` in the enroll response → call `run_service`. (docker build)
 - [ ] 13. `agent.py`: track the service container id; report `service_running` / `service_image` on
       heartbeat. (docker build)
 - [ ] 14. Update the volunteer `docker run` / Dockerfile to mount `/var/run/docker.sock` and set

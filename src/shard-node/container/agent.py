@@ -222,8 +222,8 @@ def wait_for_tunnel_public_port() -> int:
 
 # ── Enrollment ────────────────────────────────────────────────────────────────
 
-def enroll(tunnel_public_port: int) -> str | None:
-    """Register with the registrar. Returns volunteer_id or None on failure."""
+def enroll(tunnel_public_port: int) -> tuple[str, dict | None] | None:
+    """Register with the registrar. Returns (volunteer_id, assignment) or None on failure."""
     payload = {
         "os":                platform.system() + " " + platform.release(),
         "arch":              platform.machine(),
@@ -243,8 +243,11 @@ def enroll(tunnel_public_port: int) -> str | None:
 
     if resp and "volunteer_id" in resp:
         vid = resp["volunteer_id"]
+        assignment = resp.get("assignment")
         print(f"[agent] Enrolled successfully — volunteer_id={vid}")
-        return vid
+        if assignment:
+            print(f"[agent] Assignment received — image={assignment.get('image')} port={assignment.get('service_port')}")
+        return vid, assignment
 
     print("[agent] Enrollment failed.")
     return None
@@ -284,20 +287,25 @@ def heartbeat_loop(vid: str, tunnel_public_port: int):
             # Registrar lost state (e.g. restarted) — re-enroll.
             print(f"[agent] Registrar doesn't recognise volunteer_id={current_vid} — re-enrolling…")
             backoff = 2
-            new_vid = None
-            while new_vid is None:
+            enroll_result = None
+            while enroll_result is None:
                 # Re-read the public port in case the tunnel reconnected.
                 try:
                     tunnel_public_port = int(open(TUNNEL_PUBLIC_PORT_FILE).read().strip())
                 except (FileNotFoundError, ValueError):
                     pass
-                new_vid = enroll(tunnel_public_port)
-                if new_vid is None:
+                enroll_result = enroll(tunnel_public_port)
+                if enroll_result is None:
                     print(f"[agent] Re-enrollment failed, retrying in {backoff}s…")
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 30)
-            current_vid = new_vid
+            current_vid, assignment = enroll_result
             print(f"[agent] Re-enrolled — new volunteer_id={current_vid}")
+            if assignment:
+                try:
+                    apply_service_assignment(assignment["image"], assignment["service_port"])
+                except Exception as e:
+                    print(f"[agent] Failed to apply service assignment after re-enroll: {e}")
 
         else:
             print("[agent] Heartbeat failed — registrar unreachable, will retry")
@@ -316,16 +324,24 @@ def main():
 
     # Enroll with the registrar, retrying with backoff on failure.
     backoff = 2
-    vid = None
-    while vid is None:
-        vid = enroll(tunnel_public_port)
-        if vid is None:
+    enroll_result = None
+    while enroll_result is None:
+        enroll_result = enroll(tunnel_public_port)
+        if enroll_result is None:
             print(f"[agent] Retrying enrollment in {backoff}s…")
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
 
+    vid, assignment = enroll_result
+
     global VOLUNTEER_ID
     VOLUNTEER_ID = vid
+
+    if assignment:
+        try:
+            apply_service_assignment(assignment["image"], assignment["service_port"])
+        except Exception as e:
+            print(f"[agent] Failed to apply service assignment: {e}")
 
     heartbeat_loop(vid, tunnel_public_port)
 
