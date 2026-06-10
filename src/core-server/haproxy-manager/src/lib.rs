@@ -70,6 +70,34 @@ pub async fn set_weight(service_name: &str, volunteer_id: Uuid, weight: u32) -> 
     Ok(())
 }
 
+/// Assign a service to a specific volunteer.
+///
+/// Creates the `svc_<service_name>` backend + frontend ACLs via the config module
+/// (requires HAProxy reload), then adds `vol-<volunteer_id>` pointing at `tunnel_addr`
+/// via the runtime API.
+pub async fn assign_service(
+    service_name: &str,
+    domain: &str,
+    volunteer_id: Uuid,
+    tunnel_addr: &str,
+) -> Result<()> {
+    let backend = format!("svc_{}", service_name);
+    let server_name = server_name_for(volunteer_id);
+
+    config::add_service(&backend, domain).await?;
+    runtime::add_server(&backend, &server_name, tunnel_addr).await?;
+    runtime::set_state(&backend, &server_name, "ready").await?;
+
+    tracing::info!(
+        service_name,
+        domain,
+        volunteer_id = %volunteer_id,
+        tunnel_addr,
+        "Service assigned to volunteer"
+    );
+    Ok(())
+}
+
 /// Add a new service backend + frontend routing rule to haproxy.cfg and reload.
 pub async fn register_service(service_name: &str, domain: &str) -> Result<()> {
     config::add_service(service_name, domain).await?;
