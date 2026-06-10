@@ -232,7 +232,7 @@ code that references them. The verifier in parentheses is what must pass before 
 - [x] 9. Dashboard: show the assigned service (name + image + running status) per volunteer. (cargo check)
 - [x] 10. `client.rs`: read `LOCAL_SERVICE_ADDR` from env/file at startup instead of the hardcoded
       `127.0.0.1`; support a restart/reload so a new address takes effect. (cargo check)
-- [ ] 11. `agent.py`: implement `run_service(image, service_port)` (idempotent, no published ports,
+- [x] 11. `agent.py`: implement `run_service(image, service_port)` (idempotent, no published ports,
       returns container IP); set `LOCAL_SERVICE_ADDR` and (re)start the tunnel client. (docker build)
 - [ ] 12. `agent.py`: handle `assignment` in the enroll response → call `run_service`. (docker build)
 - [ ] 13. `agent.py`: track the service container id; report `service_running` / `service_image` on

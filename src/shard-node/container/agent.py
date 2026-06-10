@@ -11,6 +11,7 @@ Startup sequence:
 """
 
 import os
+import subprocess
 import time
 import json
 import socket
@@ -31,6 +32,11 @@ TUNNEL_VERSION      = "0.1.0"
 TUNNEL_PUBLIC_PORT_FILE = "/tmp/tunnel_public_port"
 # File this agent writes so the Rust client knows which data port to request.
 TUNNEL_DATA_PORT_FILE   = "/tmp/tunnel_data_port"
+# File this agent writes so the Rust client knows the local service address.
+LOCAL_SERVICE_ADDR_FILE = "/tmp/tunnel_local_addr"
+
+# Set after enrollment; used by run_service() to name the service container.
+VOLUNTEER_ID: str = ""
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
@@ -88,7 +94,6 @@ def get_docker_version() -> str:
         return version
     if shutil.which("docker"):
         try:
-            import subprocess
             result = subprocess.run(
                 ["docker", "--version"],
                 capture_output=True, text=True, timeout=2
@@ -116,6 +121,50 @@ def _disk_free_gb() -> int:
         return (st.f_bavail * st.f_frsize) // (1024 ** 3)
     except Exception:
         return 0
+
+
+# ── Service lifecycle ─────────────────────────────────────────────────────────
+
+def run_service(image: str, service_port: int) -> str:
+    """Pull and run service container (no published ports). Idempotent. Returns container IP."""
+    name = f"svc_{VOLUNTEER_ID}"
+    subprocess.run(["docker", "rm", "-f", name],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["docker", "pull", image], check=True)
+    subprocess.run([
+        "docker", "run", "-d", "--restart", "unless-stopped", "--name", name, image
+    ], check=True)
+    ip = subprocess.run(
+        ["docker", "inspect", "-f",
+         "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return ip
+
+
+def _restart_tunnel_client() -> int:
+    """Kill current tunnel client, start a fresh one, and return the new public port."""
+    try:
+        os.remove(TUNNEL_PUBLIC_PORT_FILE)
+    except FileNotFoundError:
+        pass
+    subprocess.run(["pkill", "-f", "/app/client"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1)
+    subprocess.Popen(["/app/client"])
+    return wait_for_tunnel_public_port()
+
+
+def apply_service_assignment(image: str, service_port: int) -> int:
+    """Run service container, update LOCAL_SERVICE_ADDR, restart tunnel. Returns new public port."""
+    print(f"[agent] Starting service image={image} port={service_port}")
+    ip = run_service(image, service_port)
+    addr = f"{ip}:{service_port}"
+    print(f"[agent] Service container up at {addr}")
+    with open(LOCAL_SERVICE_ADDR_FILE, "w") as f:
+        f.write(addr)
+    print(f"[agent] LOCAL_SERVICE_ADDR set to {addr}")
+    return _restart_tunnel_client()
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -274,6 +323,9 @@ def main():
             print(f"[agent] Retrying enrollment in {backoff}s…")
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
+
+    global VOLUNTEER_ID
+    VOLUNTEER_ID = vid
 
     heartbeat_loop(vid, tunnel_public_port)
 
