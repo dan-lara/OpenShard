@@ -22,13 +22,27 @@ use std::{
 
 // ── configuration ────────────────────────────────────────────────────────────
 
-const CONTROL_PORT:       u16  = 9007;
-const LOCAL_SERVICE_ADDR: &str = "127.0.0.1";
-const LOCAL_SERVICE_PORT: u16  = 8080;
-const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const CONTROL_PORT:             u16      = 9007;
+const RECONNECT_DELAY:          Duration = Duration::from_secs(5);
+const LOCAL_SERVICE_ADDR_FILE:  &str     = "/tmp/tunnel_local_addr";
 
 fn server_addr() -> String {
     std::env::var("TUNNEL_SERVER").unwrap_or_else(|_| "tunnel".to_string())
+}
+
+/// Returns the local service address as "host:port".
+/// Priority: LOCAL_SERVICE_ADDR env var → /tmp/tunnel_local_addr file → default 127.0.0.1:8080.
+/// Called on every reconnect loop so a new address written by the agent takes effect on next session.
+fn local_service_addr() -> String {
+    if let Ok(v) = std::env::var("LOCAL_SERVICE_ADDR") {
+        let v = v.trim().to_string();
+        if !v.is_empty() { return v; }
+    }
+    if let Ok(v) = fs::read_to_string(LOCAL_SERVICE_ADDR_FILE) {
+        let v = v.trim().to_string();
+        if !v.is_empty() { return v; }
+    }
+    "127.0.0.1:8080".to_string()
 }
 
 /// Written after a successful handshake so the Python agent can enroll.
@@ -39,11 +53,11 @@ const PUBLIC_PORT_FILE: &str = "/tmp/tunnel_public_port";
 fn main() {
     let server = server_addr();
     println!("[client] reverse-tunnel agent starting");
-    println!("[client]   server       : {server}:{CONTROL_PORT}");
-    println!("[client]   local service: {LOCAL_SERVICE_ADDR}:{LOCAL_SERVICE_PORT}");
+    println!("[client]   server: {server}:{CONTROL_PORT}");
 
     loop {
-        println!("[client] connecting to {server}:{CONTROL_PORT}…");
+        let local_addr = local_service_addr();
+        println!("[client] connecting to {server}:{CONTROL_PORT}… (local service: {local_addr})");
         match TcpStream::connect((server.as_str(), CONTROL_PORT)) {
             Err(e) => {
                 println!("[client] connection failed: {e} — retrying in {RECONNECT_DELAY:?}");
@@ -70,7 +84,7 @@ fn main() {
                     continue;
                 }
 
-                run_session(ctrl, data_port);
+                run_session(ctrl, data_port, &local_addr);
 
                 // Remove the port file so the Python agent doesn't use a
                 // stale value if we reconnect with a different port.
@@ -84,7 +98,7 @@ fn main() {
 
 // ── session loop ──────────────────────────────────────────────────────────────
 
-fn run_session(mut ctrl: TcpStream, data_port: u16) {
+fn run_session(mut ctrl: TcpStream, data_port: u16, local_addr: &str) {
     let mut ctrl_write = match ctrl.try_clone() {
         Ok(c) => c,
         Err(e) => { println!("[client] clone failed: {e}"); return; }
@@ -106,7 +120,8 @@ fn run_session(mut ctrl: TcpStream, data_port: u16) {
             }
             proto::TAG_OPEN => {
                 println!("[client] OPEN stream {stream_id}");
-                thread::spawn(move || handle_stream(stream_id, data_port));
+                let addr = local_addr.to_string();
+                thread::spawn(move || handle_stream(stream_id, data_port, addr));
             }
             proto::TAG_CLOSE => {
                 println!("[client] CLOSE stream {stream_id}");
@@ -118,7 +133,7 @@ fn run_session(mut ctrl: TcpStream, data_port: u16) {
 
 // ── per-stream handler ────────────────────────────────────────────────────────
 
-fn handle_stream(stream_id: u16, data_port: u16) {
+fn handle_stream(stream_id: u16, data_port: u16, local_addr: String) {
     let server = server_addr();
     let mut server_data = match TcpStream::connect((server.as_str(), data_port)) {
         Ok(s)  => s,
@@ -129,7 +144,7 @@ fn handle_stream(stream_id: u16, data_port: u16) {
         return;
     }
 
-    let local = match TcpStream::connect((LOCAL_SERVICE_ADDR, LOCAL_SERVICE_PORT)) {
+    let local = match TcpStream::connect(local_addr.as_str()) {
         Ok(s)  => s,
         Err(e) => { println!("[client] stream {stream_id}: local service connect failed: {e}"); return; }
     };
