@@ -237,7 +237,7 @@ code that references them. The verifier in parentheses is what must pass before 
 - [x] 12. `agent.py`: handle `assignment` in the enroll response → call `run_service`. (docker build)
 - [x] 13. `agent.py`: track the service container id; report `service_running` / `service_image` on
       heartbeat. (docker build)
-- [ ] 14. Update the volunteer `docker run` / Dockerfile to mount `/var/run/docker.sock` and set
+- [x] 14. Update the volunteer `docker run` / Dockerfile to mount `/var/run/docker.sock` and set
       `TUNNEL_SERVER` + `REGISTRAR_URL` to the canonical domain. (docker build)
 
 ---

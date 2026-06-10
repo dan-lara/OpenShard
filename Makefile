@@ -55,7 +55,9 @@ vol-run:
 	docker run --rm -d \
 		--name openshard-volunteer \
 		--network host \
-		-e REGISTRAR_URL=http://localhost:$(REGISTRAR_PORT) \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-e REGISTRAR_URL=http://openshard.danlara.com.br:$(REGISTRAR_PORT) \
+		-e TUNNEL_SERVER=openshard.danlara.com.br \
 		-e SERVICE_PORT=$(VOLUNTEER_PORT) \
 		-e HOSTNAME=volunteer-local \
 		$(VOLUNTEER_IMAGE)
