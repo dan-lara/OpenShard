@@ -1,13 +1,14 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use std::collections::HashMap;
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::state::{HandshakeInfo, Metrics, VolunteerState};
+use crate::state::{HandshakeInfo, Metrics, ServiceAssignment, VolunteerState};
 
 #[derive(Clone)]
 pub struct Db(SqlitePool);
 
-const CREATE_TABLE: &str = r#"
+const CREATE_VOLUNTEERS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS volunteers (
     id               TEXT PRIMARY KEY,
     hostname         TEXT NOT NULL,
@@ -26,6 +27,17 @@ CREATE TABLE IF NOT EXISTS volunteers (
     active_requests  INTEGER NOT NULL DEFAULT 0,
     enrolled_at      TEXT NOT NULL,
     last_heartbeat   TEXT NOT NULL
+)
+"#;
+
+const CREATE_ASSIGNMENTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS service_assignments (
+    volunteer_id  TEXT PRIMARY KEY,
+    service_name  TEXT NOT NULL,
+    domain        TEXT NOT NULL,
+    image         TEXT NOT NULL,
+    service_port  INTEGER NOT NULL,
+    assigned_at   TEXT NOT NULL
 )
 "#;
 
@@ -48,6 +60,16 @@ struct DbRow {
     active_requests: i64,
     enrolled_at: String,
     last_heartbeat: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AssignmentRow {
+    volunteer_id: String,
+    service_name: String,
+    domain: String,
+    image: String,
+    service_port: i64,
+    assigned_at: String,
 }
 
 impl TryFrom<DbRow> for VolunteerState {
@@ -91,7 +113,8 @@ impl Db {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}", path))?
             .create_if_missing(true);
         let pool = SqlitePool::connect_with(opts).await?;
-        sqlx::query(CREATE_TABLE).execute(&pool).await?;
+        sqlx::query(CREATE_VOLUNTEERS_TABLE).execute(&pool).await?;
+        sqlx::query(CREATE_ASSIGNMENTS_TABLE).execute(&pool).await?;
         Ok(Self(pool))
     }
 
@@ -139,6 +162,7 @@ impl Db {
     }
 
     pub async fn load_all(&self) -> Vec<VolunteerState> {
+        let mut assignments = self.load_assignments().await;
         match sqlx::query_as::<_, DbRow>("SELECT * FROM volunteers")
             .fetch_all(&self.0)
             .await
@@ -146,7 +170,10 @@ impl Db {
             Ok(rows) => rows
                 .into_iter()
                 .filter_map(|r| {
+                    let id = Uuid::parse_str(&r.id).ok()?;
+                    let assignment = assignments.remove(&id);
                     VolunteerState::try_from(r)
+                        .map(|mut v| { v.assigned_service = assignment; v })
                         .map_err(|e| tracing::warn!(error = %e, "Skipping corrupt DB row"))
                         .ok()
                 })
@@ -154,6 +181,66 @@ impl Db {
             Err(e) => {
                 tracing::error!(error = %e, "Failed to load volunteers from DB");
                 vec![]
+            }
+        }
+    }
+
+    pub async fn upsert_assignment(&self, volunteer_id: Uuid, a: &ServiceAssignment) {
+        let result = sqlx::query(
+            "INSERT OR REPLACE INTO service_assignments
+             (volunteer_id, service_name, domain, image, service_port, assigned_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(volunteer_id.to_string())
+        .bind(&a.service_name)
+        .bind(&a.domain)
+        .bind(&a.image)
+        .bind(a.service_port as i64)
+        .bind(a.assigned_at.to_rfc3339())
+        .execute(&self.0)
+        .await;
+
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "Failed to upsert service assignment to DB");
+        }
+    }
+
+    pub async fn remove_assignment(&self, volunteer_id: Uuid) {
+        if let Err(e) =
+            sqlx::query("DELETE FROM service_assignments WHERE volunteer_id = ?1")
+                .bind(volunteer_id.to_string())
+                .execute(&self.0)
+                .await
+        {
+            tracing::warn!(error = %e, "Failed to remove service assignment from DB");
+        }
+    }
+
+    async fn load_assignments(&self) -> HashMap<Uuid, ServiceAssignment> {
+        match sqlx::query_as::<_, AssignmentRow>("SELECT * FROM service_assignments")
+            .fetch_all(&self.0)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|r| {
+                    let vid = Uuid::parse_str(&r.volunteer_id).ok()?;
+                    let assigned_at = r.assigned_at.parse().ok()?;
+                    Some((
+                        vid,
+                        ServiceAssignment {
+                            service_name: r.service_name,
+                            domain: r.domain,
+                            image: r.image,
+                            service_port: r.service_port as u16,
+                            assigned_at,
+                        },
+                    ))
+                })
+                .collect(),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to load service assignments from DB");
+                HashMap::new()
             }
         }
     }

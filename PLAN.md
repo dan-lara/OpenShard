@@ -219,7 +219,7 @@ code that references them. The verifier in parentheses is what must pass before 
 - [x] 3. `enrollment.rs` (types only): define `AssignmentPayload`, add
       `assignment: Option<AssignmentPayload>` to `EnrollResponse`, and update **every existing
       `EnrollResponse` construction site** to pass `assignment: None`. (cargo check)
-- [ ] 4. `db.rs`: add the `service_assignments` table and insert/load helpers. (cargo check)
+- [x] 4. `db.rs`: add the `service_assignments` table and insert/load helpers. (cargo check)
 - [ ] 5. `haproxy_manager::assign_service(domain, volunteer_id, tunnel_addr)` — create per-service
       backend, ACL, and `use_backend` via the runtime API. (cargo check)
 - [ ] 6. `services.rs`: add `image` + `port` to `RegisterServiceRequest`; on register, assign to a free
