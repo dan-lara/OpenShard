@@ -224,7 +224,7 @@ code that references them. The verifier in parentheses is what must pass before 
       backend, ACL, and `use_backend` via the runtime API. (cargo check)
 - [x] 6. `services.rs`: add `image` + `port` to `RegisterServiceRequest`; on register, assign to a free
       volunteer immediately (call `assign_service`) else push to `pending_services`. (cargo check)
-- [ ] 7. `enrollment.rs` (logic): on enroll, dequeue a `PendingService`, call `assign_service` with
+- [x] 7. `enrollment.rs` (logic): on enroll, dequeue a `PendingService`, call `assign_service` with
       `127.0.0.1:<tunnel_public_port>`, persist via `db.rs`, set `assigned_service`, and populate
       `assignment` in the response. (cargo check)
 - [ ] 8. Registrar: accept `service_running` / `service_image` fields in the heartbeat handler and

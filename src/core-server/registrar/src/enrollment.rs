@@ -15,7 +15,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::state::{AppState, HandshakeInfo, Metrics, VolunteerState, HEARTBEAT_INTERVAL_SECS};
+use crate::state::{AppState, HandshakeInfo, Metrics, ServiceAssignment, VolunteerState, HEARTBEAT_INTERVAL_SECS};
 
 #[derive(Debug, Deserialize)]
 pub struct EnrollRequest {
@@ -94,7 +94,7 @@ pub async fn enroll(
     info.hostname = hostname.clone();
     info.service_addr = service_addr.clone();
 
-    let volunteer = VolunteerState {
+    let mut volunteer = VolunteerState {
         id,
         metrics: Metrics {
             cpu_pct: 0.0,
@@ -106,6 +106,52 @@ pub async fn enroll(
         last_heartbeat: now,
         info,
         assigned_service: None,
+    };
+
+    // Dequeue a pending service and assign it to this volunteer if one is available.
+    let pending = {
+        let mut queue = state.pending_services.write().await;
+        queue.pop_front()
+    };
+
+    let assignment_payload = if let Some(pending) = pending {
+        let tunnel_addr = format!("127.0.0.1:{}", body.tunnel_public_port);
+        match haproxy_manager::assign_service(&pending.name, &pending.domain, id, &tunnel_addr).await {
+            Ok(()) => {
+                let assignment = ServiceAssignment {
+                    service_name: pending.name.clone(),
+                    domain: pending.domain.clone(),
+                    image: pending.image.clone(),
+                    service_port: pending.service_port,
+                    assigned_at: now,
+                };
+                state.db.upsert_assignment(id, &assignment).await;
+                let payload = AssignmentPayload {
+                    image: assignment.image.clone(),
+                    service_port: assignment.service_port,
+                };
+                volunteer.assigned_service = Some(assignment);
+                tracing::info!(
+                    volunteer_id = %id,
+                    name = %pending.name,
+                    domain = %pending.domain,
+                    "Assigned pending service to newly enrolled volunteer"
+                );
+                Some(payload)
+            }
+            Err(e) => {
+                tracing::error!(
+                    volunteer_id = %id,
+                    name = %pending.name,
+                    error = %e,
+                    "Failed to assign pending service via HAProxy; re-queuing"
+                );
+                state.pending_services.write().await.push_front(pending);
+                None
+            }
+        }
+    } else {
+        None
     };
 
     state.db.upsert_volunteer(&volunteer).await;
@@ -136,7 +182,7 @@ pub async fn enroll(
         Json(EnrollResponse {
             volunteer_id: id.to_string(),
             heartbeat_interval_seconds: HEARTBEAT_INTERVAL_SECS,
-            assignment: None,
+            assignment: assignment_payload,
         }),
     )
 }
