@@ -129,12 +129,10 @@ pub async fn list_services() -> impl IntoResponse {
     }
 }
 
-/// Re-maps a volunteer's service_addr ("tunnel_ip:port") to the controller-local
-/// tunnel listener address ("127.0.0.1:port") that HAProxy must use as the backend target.
+/// Returns the tunnel address HAProxy should use to reach this volunteer's service.
+/// `service_addr` is already "tunnel_ip:port" as resolved from TUNNEL_HOST, so we
+/// use it directly — no remapping to 127.0.0.1, which would break when HAProxy
+/// runs inside a Docker container (different network namespace from the tunnel server).
 fn tunnel_addr_for(service_addr: &str) -> String {
-    service_addr
-        .rsplit(':')
-        .next()
-        .map(|port| format!("127.0.0.1:{}", port))
-        .unwrap_or_else(|| service_addr.to_string())
+    service_addr.to_string()
 }

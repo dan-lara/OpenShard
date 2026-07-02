@@ -187,6 +187,63 @@ impl Db {
         }
     }
 
+    /// Find the UUID of a volunteer previously enrolled under this stable node
+    /// key (the agent's hostname). Lets re-enrollment reuse the same identity so
+    /// service assignments survive volunteer/registrar restarts.
+    pub async fn find_by_hostname(&self, hostname: &str) -> Option<Uuid> {
+        match sqlx::query_scalar::<_, String>(
+            "SELECT id FROM volunteers WHERE hostname = ?1 LIMIT 1",
+        )
+        .bind(hostname)
+        .fetch_optional(&self.0)
+        .await
+        {
+            Ok(Some(s)) => Uuid::parse_str(&s).ok(),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "find_by_hostname query failed");
+                None
+            }
+        }
+    }
+
+    /// Load a single volunteer's persisted service assignment, if any.
+    pub async fn get_assignment(&self, volunteer_id: Uuid) -> Option<ServiceAssignment> {
+        let row = sqlx::query_as::<_, AssignmentRow>(
+            "SELECT * FROM service_assignments WHERE volunteer_id = ?1",
+        )
+        .bind(volunteer_id.to_string())
+        .fetch_optional(&self.0)
+        .await
+        .ok()??;
+        Some(ServiceAssignment {
+            service_name: row.service_name,
+            domain: row.domain,
+            image: row.image,
+            service_port: row.service_port as u16,
+            assigned_at: row.assigned_at.parse().ok()?,
+        })
+    }
+
+    /// Delete assignment rows that no longer reference an existing volunteer.
+    /// Returns the number of rows removed. Cleans up stale rows accumulated by
+    /// the pre-stable-identity behaviour (a fresh UUID on every enroll).
+    pub async fn prune_orphan_assignments(&self) -> u64 {
+        match sqlx::query(
+            "DELETE FROM service_assignments \
+             WHERE volunteer_id NOT IN (SELECT id FROM volunteers)",
+        )
+        .execute(&self.0)
+        .await
+        {
+            Ok(r) => r.rows_affected(),
+            Err(e) => {
+                tracing::warn!(error = %e, "prune_orphan_assignments failed");
+                0
+            }
+        }
+    }
+
     pub async fn upsert_assignment(&self, volunteer_id: Uuid, a: &ServiceAssignment) {
         let result = sqlx::query(
             "INSERT OR REPLACE INTO service_assignments

@@ -15,7 +15,24 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::state::{AppState, HandshakeInfo, Metrics, ServiceAssignment, VolunteerState, HEARTBEAT_INTERVAL_SECS};
+use crate::state::{
+    AppState, HandshakeInfo, Metrics, ServiceAssignment, VolunteerState, HEARTBEAT_INTERVAL_SECS,
+};
+
+/// Resolve `TUNNEL_HOST` to an IP. HAProxy's runtime `add server` requires a
+/// strict IP and will not route to a hostname.
+async fn resolve_tunnel_ip(tunnel_host: &str) -> String {
+    match tokio::net::lookup_host(format!("{}:0", tunnel_host)).await {
+        Ok(mut addrs) => addrs
+            .next()
+            .map(|a| a.ip().to_string())
+            .unwrap_or_else(|| tunnel_host.to_string()),
+        Err(e) => {
+            tracing::warn!("Failed to resolve TUNNEL_HOST {}: {}", tunnel_host, e);
+            tunnel_host.to_string()
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct EnrollRequest {
@@ -70,32 +87,51 @@ pub async fn enroll(
     State(state): State<AppState>,
     Json(body): Json<EnrollRequest>,
 ) -> impl IntoResponse {
-    let id = Uuid::new_v4();
     let now = Utc::now();
 
     let tunnel_host = std::env::var("TUNNEL_HOST").unwrap_or_else(|_| "tunnel".to_string());
-    
-    // Resolve the hostname to an IP address because HAProxy's `add server` 
-    // runtime API requires a strict IP and will fail to route to a hostname.
-    let resolved_ip = match tokio::net::lookup_host(format!("{}:0", tunnel_host)).await {
-        Ok(mut addrs) => {
-            if let Some(addr) = addrs.next() {
-                addr.ip().to_string()
-            } else {
-                tunnel_host.clone()
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to resolve TUNNEL_HOST {}: {}", tunnel_host, e);
-            tunnel_host.clone()
+    let resolved_ip = resolve_tunnel_ip(&tunnel_host).await;
+    let service_addr = format!("{}:{}", resolved_ip, body.tunnel_public_port);
+
+    // Stable identity: the agent's hostname is a stable per-node key (set by the
+    // deploy to volunteer-<lxc>). Reuse the UUID — and any existing assignment —
+    // of a volunteer already known under this key so assignments survive restarts
+    // and redeploys instead of being orphaned by a fresh UUID each enroll.
+    let node_key = body.info.hostname.clone();
+
+    let existing_id = if node_key.is_empty() {
+        None
+    } else {
+        let from_mem = {
+            let map = state.volunteers.read().await;
+            map.values().find(|v| v.info.hostname == node_key).map(|v| v.id)
+        };
+        match from_mem {
+            Some(id) => Some(id),
+            None => state.db.find_by_hostname(&node_key).await,
         }
     };
 
-    let service_addr = format!("{}:{}", resolved_ip, body.tunnel_public_port);
-    let hostname = service_addr.clone();
+    let existing_assignment = match existing_id {
+        Some(id) => {
+            let from_mem = {
+                let map = state.volunteers.read().await;
+                map.get(&id).and_then(|v| v.assigned_service.clone())
+            };
+            match from_mem {
+                Some(a) => Some(a),
+                None => state.db.get_assignment(id).await,
+            }
+        }
+        None => None,
+    };
 
+    let id = existing_id.unwrap_or_else(Uuid::new_v4);
+    let reused = existing_id.is_some();
+
+    // Keep the agent-provided hostname as the stable node key; only the service
+    // address (tunnel ip:port) changes between enrollments.
     let mut info = body.info.clone();
-    info.hostname = hostname.clone();
     info.service_addr = service_addr.clone();
 
     let mut volunteer = VolunteerState {
@@ -114,50 +150,86 @@ pub async fn enroll(
         service_image: None,
     };
 
-    // Dequeue a pending service and assign it to this volunteer if one is available.
-    let pending = {
-        let mut queue = state.pending_services.write().await;
-        queue.pop_front()
-    };
-
-    let assignment_payload = if let Some(pending) = pending {
-        let tunnel_addr = format!("127.0.0.1:{}", body.tunnel_public_port);
-        match haproxy_manager::assign_service(&pending.name, &pending.domain, id, &tunnel_addr).await {
-            Ok(()) => {
-                let assignment = ServiceAssignment {
-                    service_name: pending.name.clone(),
-                    domain: pending.domain.clone(),
-                    image: pending.image.clone(),
-                    service_port: pending.service_port,
-                    assigned_at: now,
-                };
-                state.db.upsert_assignment(id, &assignment).await;
-                let payload = AssignmentPayload {
-                    image: assignment.image.clone(),
-                    service_port: assignment.service_port,
-                };
-                volunteer.assigned_service = Some(assignment);
-                tracing::info!(
-                    volunteer_id = %id,
-                    name = %pending.name,
-                    domain = %pending.domain,
-                    "Assigned pending service to newly enrolled volunteer"
-                );
-                Some(payload)
-            }
-            Err(e) => {
-                tracing::error!(
-                    volunteer_id = %id,
-                    name = %pending.name,
-                    error = %e,
-                    "Failed to assign pending service via HAProxy; re-queuing"
-                );
-                state.pending_services.write().await.push_front(pending);
-                None
-            }
+    let assignment_payload = if let Some(assignment) = existing_assignment {
+        // Returning volunteer — keep its service and repoint HAProxy at the new
+        // tunnel address.
+        if let Err(e) = haproxy_manager::assign_service(
+            &assignment.service_name,
+            &assignment.domain,
+            id,
+            &service_addr,
+        )
+        .await
+        {
+            tracing::warn!(
+                volunteer_id = %id,
+                name = %assignment.service_name,
+                error = %e,
+                "Failed to repoint assigned service on re-enroll"
+            );
         }
+        state.db.upsert_assignment(id, &assignment).await;
+        let payload = AssignmentPayload {
+            image: assignment.image.clone(),
+            service_port: assignment.service_port,
+        };
+        tracing::info!(
+            volunteer_id = %id,
+            name = %assignment.service_name,
+            "Re-attached existing service to returning volunteer"
+        );
+        volunteer.assigned_service = Some(assignment);
+        Some(payload)
     } else {
-        None
+        // New volunteer (or returning one with no service) — dequeue a pending
+        // service and assign it.
+        let pending = { state.pending_services.write().await.pop_front() };
+        match pending {
+            Some(pending) => {
+                match haproxy_manager::assign_service(
+                    &pending.name,
+                    &pending.domain,
+                    id,
+                    &service_addr,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        let assignment = ServiceAssignment {
+                            service_name: pending.name.clone(),
+                            domain: pending.domain.clone(),
+                            image: pending.image.clone(),
+                            service_port: pending.service_port,
+                            assigned_at: now,
+                        };
+                        state.db.upsert_assignment(id, &assignment).await;
+                        let payload = AssignmentPayload {
+                            image: assignment.image.clone(),
+                            service_port: assignment.service_port,
+                        };
+                        volunteer.assigned_service = Some(assignment);
+                        tracing::info!(
+                            volunteer_id = %id,
+                            name = %pending.name,
+                            domain = %pending.domain,
+                            "Assigned pending service to newly enrolled volunteer"
+                        );
+                        Some(payload)
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            volunteer_id = %id,
+                            name = %pending.name,
+                            error = %e,
+                            "Failed to assign pending service via HAProxy; re-queuing"
+                        );
+                        state.pending_services.write().await.push_front(pending);
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
     };
 
     state.db.upsert_volunteer(&volunteer).await;
@@ -168,8 +240,8 @@ pub async fn enroll(
         map.len()
     };
 
-    if let Err(e) = haproxy_manager::add_volunteer("volunteers", id, &service_addr, 100).await {
-        tracing::warn!(volunteer_id = %id, error = %e, "Failed to add volunteer to HAProxy");
+    if let Err(e) = haproxy_manager::upsert_volunteer("volunteers", id, &service_addr, 100).await {
+        tracing::warn!(volunteer_id = %id, error = %e, "Failed to upsert volunteer in HAProxy");
     }
 
     metrics::counter!("openshard_enrollments_total").increment(1);
@@ -177,8 +249,9 @@ pub async fn enroll(
 
     tracing::info!(
         volunteer_id = %id,
-        hostname = %hostname,
+        node_key = %node_key,
         addr = %service_addr,
+        reused,
         tunnel_public_port = body.tunnel_public_port,
         "Volunteer enrolled"
     );
@@ -250,7 +323,16 @@ pub async fn heartbeat(
             metrics::gauge!("openshard_volunteer_cpu_pct", "hostname" => hostname.clone()).set(body.cpu_pct as f64);
             metrics::gauge!("openshard_volunteer_mem_pct", "hostname" => hostname).set(body.mem_pct as f64);
 
-            (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })).into_response())
+            // Include the assignment in every heartbeat response so a volunteer
+            // that was assigned after enrollment can pick it up on the next tick.
+            let assignment = volunteer.assigned_service.as_ref().map(|svc| {
+                serde_json::json!({ "image": svc.image, "service_port": svc.service_port })
+            });
+
+            (StatusCode::OK, Json(serde_json::json!({
+                "status": "ok",
+                "assignment": assignment,
+            })).into_response())
         }
     }
 }
@@ -302,4 +384,82 @@ pub async fn disconnect(
 pub async fn list_volunteers(State(state): State<AppState>) -> impl IntoResponse {
     let active = state.active_volunteers().await;
     Json(active)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateTunnelPortRequest {
+    pub tunnel_public_port: u16,
+}
+
+/// Called by the volunteer agent after it restarts the tunnel client following
+/// a service assignment. The tunnel client reconnects and receives a new public
+/// port; this endpoint propagates that new address to HAProxy so both the
+/// `volunteers` backend and the `svc_*` backend stay current.
+pub async fn update_tunnel_port(
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<UpdateTunnelPortRequest>,
+) -> impl IntoResponse {
+    let id = match Uuid::parse_str(&id_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                err("Invalid UUID", "INVALID_ID").into_response(),
+            )
+        }
+    };
+
+    let tunnel_host = std::env::var("TUNNEL_HOST").unwrap_or_else(|_| "tunnel".to_string());
+    let resolved_ip = resolve_tunnel_ip(&tunnel_host).await;
+
+    let new_service_addr = format!("{}:{}", resolved_ip, body.tunnel_public_port);
+    let new_tunnel_addr = new_service_addr.clone();
+
+    let update_result = {
+        let mut map = state.volunteers.write().await;
+        match map.get_mut(&id) {
+            None => None,
+            Some(volunteer) => {
+                // Only the tunnel address changes; hostname stays the stable node key.
+                volunteer.info.service_addr = new_service_addr.clone();
+                let svc_info = volunteer.assigned_service.as_ref().map(|s| {
+                    (s.service_name.clone(), new_tunnel_addr.clone())
+                });
+                Some((volunteer.clone(), svc_info))
+            }
+        }
+    };
+
+    match update_result {
+        None => (
+            StatusCode::NOT_FOUND,
+            err("Volunteer not found", "VOLUNTEER_NOT_FOUND").into_response(),
+        ),
+        Some((volunteer, svc_info)) => {
+            state.db.upsert_volunteer(&volunteer).await;
+
+            if let Err(e) =
+                haproxy_manager::update_volunteer_addr(id, &new_service_addr, svc_info).await
+            {
+                tracing::warn!(
+                    volunteer_id = %id,
+                    error = %e,
+                    "Failed to update HAProxy addr after tunnel port change"
+                );
+            } else {
+                tracing::info!(
+                    volunteer_id = %id,
+                    addr = %new_service_addr,
+                    port = body.tunnel_public_port,
+                    "Tunnel port updated"
+                );
+            }
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "ok" })).into_response(),
+            )
+        }
+    }
 }

@@ -1,6 +1,24 @@
 use std::env;
+use std::sync::OnceLock;
 use thiserror::Error;
 use tokio::process::Command;
+use tokio::sync::Mutex;
+
+extern crate libc;
+
+/// Serializes config edits + reloads. HAProxy's master can coalesce/drop a
+/// SIGUSR2 that arrives while a previous reload is still forking its new worker,
+/// which silently loses a backend (the file has it, the running process doesn't).
+/// Holding this lock across the reload + a short settle prevents overlapping
+/// reloads, so every config change reliably lands in the running process.
+fn config_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// How long to wait after a reload before releasing the lock, giving the new
+/// HAProxy worker time to come up before the next reload can fire.
+const RELOAD_SETTLE_MS: u64 = 750;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -60,20 +78,15 @@ async fn reload_haproxy() -> Result<()> {
         ConfigError::ReloadFailed(format!("invalid PID in {pid_path}: {}", pid_str.trim()))
     })?;
 
-    let status = Command::new("kill")
-        .arg("-USR2")
-        .arg(pid.to_string())
-        .status()
-        .await?;
-
-    if status.success() {
-        tracing::info!(pid, "HAProxy reloaded successfully");
+    // Send SIGUSR2 directly via syscall — avoids dependency on an external `kill` binary
+    // which is not present in debian:bookworm-slim (procps not installed).
+    let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGUSR2) };
+    if rc == 0 {
+        tracing::info!(pid, "HAProxy reloaded via SIGUSR2");
         Ok(())
     } else {
-        Err(ConfigError::ReloadFailed(format!(
-            "kill -USR2 {pid} exited with code {:?}",
-            status.code()
-        )))
+        let err = std::io::Error::last_os_error();
+        Err(ConfigError::ReloadFailed(format!("kill -USR2 {pid}: {err}")))
     }
 }
 
@@ -112,6 +125,7 @@ pub fn service_exists(content: &str, service_name: &str) -> bool {
 ///
 /// Idempotent: returns Ok(()) without touching the config if the service already exists.
 pub async fn add_service(service_name: &str, domain: &str) -> Result<()> {
+    let _guard = config_lock().lock().await;
     let content = read_config().await?;
 
     if service_exists(&content, service_name) {
@@ -148,7 +162,9 @@ pub async fn add_service(service_name: &str, domain: &str) -> Result<()> {
     }
 
     tracing::info!(service_name, domain, "Service added to HAProxy config");
-    reload_haproxy().await
+    reload_haproxy().await?;
+    tokio::time::sleep(std::time::Duration::from_millis(RELOAD_SETTLE_MS)).await;
+    Ok(())
 }
 
 /// Remove service ACLs from the frontend section and the entire backend block,
@@ -156,6 +172,7 @@ pub async fn add_service(service_name: &str, domain: &str) -> Result<()> {
 ///
 /// Idempotent: returns Ok(()) if the service does not exist.
 pub async fn remove_service(service_name: &str) -> Result<()> {
+    let _guard = config_lock().lock().await;
     let content = read_config().await?;
 
     if !service_exists(&content, service_name) {
@@ -198,7 +215,9 @@ pub async fn remove_service(service_name: &str) -> Result<()> {
     }
 
     tracing::info!(service_name, "Service removed from HAProxy config");
-    reload_haproxy().await
+    reload_haproxy().await?;
+    tokio::time::sleep(std::time::Duration::from_millis(RELOAD_SETTLE_MS)).await;
+    Ok(())
 }
 
 /// Return the list of service backend names currently in the config.

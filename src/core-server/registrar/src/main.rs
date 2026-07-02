@@ -15,6 +15,21 @@ use chrono::Utc;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use state::AppState;
 
+/// Block until HAProxy's admin socket appears (up to ~15s), so runtime API
+/// calls made during crash recovery don't fail with "No such file or directory".
+async fn wait_for_haproxy_socket() {
+    let path = std::env::var("HAPROXY_SOCKET")
+        .unwrap_or_else(|_| "/run/haproxy/admin.sock".to_string());
+    for _ in 0..30 {
+        if std::path::Path::new(&path).exists() {
+            tracing::info!(path = %path, "HAProxy admin socket present");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    tracing::warn!(path = %path, "HAProxy admin socket not present after wait; proceeding anyway");
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -38,15 +53,36 @@ async fn main() {
 
     let state = AppState::new(database, metrics_handle);
 
-    // Crash recovery: re-populate in-memory state from the last known DB snapshot
+    // Drop assignment rows left behind by the pre-stable-identity behaviour
+    // (a fresh UUID on every enroll orphaned every assignment).
+    let pruned = state.db.prune_orphan_assignments().await;
+    if pruned > 0 {
+        tracing::info!(pruned, "Pruned orphaned service assignments");
+    }
+
+    // The HAProxy admin socket is created by HAProxy a moment after this process
+    // starts (same container). Runtime API calls fail until it exists, so wait
+    // for it before crash recovery touches the runtime API.
+    wait_for_haproxy_socket().await;
+
+    // Crash recovery: re-populate in-memory state from the last known DB snapshot.
+    //
+    // Two-pass approach so service config reloads (SIGUSR2) all happen in pass 1
+    // before any runtime server additions in pass 2.  Mixing them would cause
+    // each HAProxy reload to wipe the servers added in the previous iteration.
     {
         let survivors = state.db.load_all().await;
         let count = survivors.len();
         if count > 0 {
-            // Collect addr info before taking the lock so we don't hold it across awaits
-            let addrs: Vec<(uuid::Uuid, String)> = survivors
+            // Collect recovery data before consuming survivors into the map.
+            type SvcInfo = Option<(String, String)>; // (service_name, domain)
+            let recovery: Vec<(uuid::Uuid, String, SvcInfo)> = survivors
                 .iter()
-                .map(|v| (v.id, v.info.service_addr.clone()))
+                .map(|v| {
+                    let svc = v.assigned_service.as_ref()
+                        .map(|s| (s.service_name.clone(), s.domain.clone()));
+                    (v.id, v.info.service_addr.clone(), svc)
+                })
                 .collect();
 
             {
@@ -58,10 +94,29 @@ async fn main() {
                 }
             }
 
-            for (id, addr) in addrs {
-                // Best-effort: HAProxy may already know this server if it didn't restart
-                if let Err(e) = haproxy_manager::add_volunteer("volunteers", id, &addr, 1).await {
-                    tracing::debug!(volunteer_id = %id, error = %e, "HAProxy add on recovery (may already exist)");
+            // Pass 1: restore service backend configs (may trigger SIGUSR2 reloads).
+            let any_services = recovery.iter().any(|(_, _, s)| s.is_some());
+            for (_, _, svc) in &recovery {
+                if let Some((service_name, domain)) = svc {
+                    if let Err(e) = haproxy_manager::ensure_service_config(service_name, domain).await {
+                        tracing::warn!(service_name, error = %e, "Failed to restore service config on recovery");
+                    }
+                }
+            }
+            // Let the final HAProxy worker settle before adding runtime servers.
+            if any_services {
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+            }
+
+            // Pass 2: add all runtime server entries (no more config changes / reloads).
+            for (id, addr, svc) in &recovery {
+                if let Err(e) = haproxy_manager::upsert_volunteer("volunteers", *id, addr, 1).await {
+                    tracing::debug!(volunteer_id = %id, error = %e, "HAProxy upsert on recovery");
+                }
+                if let Some((service_name, _)) = svc {
+                    if let Err(e) = haproxy_manager::restore_service_server(service_name, *id, addr).await {
+                        tracing::debug!(volunteer_id = %id, service_name, error = %e, "HAProxy svc server restore on recovery");
+                    }
                 }
             }
 
@@ -78,6 +133,7 @@ async fn main() {
         .route("/heartbeat", post(enrollment::heartbeat))
         .route("/enroll/:id", delete(enrollment::disconnect))
         .route("/volunteers", get(enrollment::list_volunteers))
+        .route("/volunteers/:id/tunnel-port", post(enrollment::update_tunnel_port))
         .route("/dispatch", post(dispatch::dispatch))
         .route("/services", post(services::register_service))
         .route("/services", get(services::list_services))

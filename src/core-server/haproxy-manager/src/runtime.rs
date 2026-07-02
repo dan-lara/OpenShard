@@ -82,3 +82,17 @@ pub async fn set_state(backend: &str, server_name: &str, state: &str) -> Result<
     tracing::debug!(backend, server_name, state, response = %resp, "set_state");
     Ok(())
 }
+
+/// Update the address of an existing dynamic server.
+///
+/// `addr` must be in "ip:port" format. HAProxy keeps all other server
+/// attributes (weight, state, …) unchanged.
+pub async fn set_addr(backend: &str, server_name: &str, addr: &str) -> Result<()> {
+    let (ip, port) = addr.rsplit_once(':').ok_or_else(|| {
+        RuntimeError::Response(format!("invalid addr (expected ip:port): {}", addr))
+    })?;
+    let cmd = format!("set server {}/{} addr {} port {}", backend, server_name, ip, port);
+    let resp = send_command(&cmd).await?;
+    tracing::debug!(backend, server_name, addr, response = %resp, "set_addr");
+    Ok(())
+}
