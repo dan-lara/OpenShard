@@ -18,7 +18,8 @@ import socket
 import platform
 import urllib.request
 import urllib.error
-import shutil
+import urllib.parse
+import http.client
 
 
 # ── Config from environment ───────────────────────────────────────────────────
@@ -27,6 +28,46 @@ SERVICE_PORT        = int(os.environ.get("SERVICE_PORT", "8080"))
 HEARTBEAT_INTERVAL  = int(os.environ.get("HEARTBEAT_INTERVAL", "15"))
 HOSTNAME            = os.environ.get("HOSTNAME", socket.gethostname())
 TUNNEL_VERSION      = "0.1.0"
+
+# Optional resource caps applied to the spawned service container, so a
+# constrained donor host can be simulated realistically. Examples:
+#   SERVICE_CPUS=0.5      (half a core)
+#   SERVICE_MEMORY=256m   (256 MiB hard cap; swap disabled)
+SERVICE_CPUS        = os.environ.get("SERVICE_CPUS", "").strip()
+SERVICE_MEMORY      = os.environ.get("SERVICE_MEMORY", "").strip()
+
+
+def _parse_mem_bytes(s: str) -> int:
+    """Parse a docker-style memory string (e.g. '256m', '1g', '512k') to bytes."""
+    s = s.strip().lower()
+    mult = 1
+    if s.endswith("g"):
+        mult, s = 1024 ** 3, s[:-1]
+    elif s.endswith("m"):
+        mult, s = 1024 ** 2, s[:-1]
+    elif s.endswith("k"):
+        mult, s = 1024, s[:-1]
+    elif s.endswith("b"):
+        s = s[:-1]
+    return int(float(s) * mult)
+
+
+def _service_host_config() -> dict:
+    """HostConfig for the service container: restart policy + optional CPU/RAM caps."""
+    hc = {"RestartPolicy": {"Name": "unless-stopped"}}
+    if SERVICE_CPUS:
+        try:
+            hc["NanoCpus"] = int(float(SERVICE_CPUS) * 1_000_000_000)
+        except ValueError:
+            print(f"[agent] invalid SERVICE_CPUS={SERVICE_CPUS!r}, ignoring")
+    if SERVICE_MEMORY:
+        try:
+            mem = _parse_mem_bytes(SERVICE_MEMORY)
+            hc["Memory"] = mem
+            hc["MemorySwap"] = mem  # equal to Memory → disable swap, hard cap
+        except ValueError:
+            print(f"[agent] invalid SERVICE_MEMORY={SERVICE_MEMORY!r}, ignoring")
+    return hc
 
 # File the Rust client writes after completing the tunnel handshake.
 TUNNEL_PUBLIC_PORT_FILE = "/tmp/tunnel_public_port"
@@ -91,20 +132,44 @@ def get_cpu_model() -> str:
     return "unknown"
 
 
+# ── Docker socket API (no docker-cli needed) ──────────────────────────────────
+
+class _DockerHTTP(http.client.HTTPConnection):
+    """HTTPConnection that talks to the Docker Unix socket."""
+    def __init__(self, timeout: float = 30):
+        super().__init__("localhost", timeout=timeout)
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        s.connect("/var/run/docker.sock")
+        self.sock = s
+
+
+def _docker(method: str, path: str, body=None, timeout: float = 30):
+    conn = _DockerHTTP(timeout=timeout)
+    data = json.dumps(body).encode() if body is not None else None
+    hdrs = {"Content-Type": "application/json"} if body is not None else {}
+    conn.request(method, path, body=data, headers=hdrs)
+    resp = conn.getresponse()
+    raw = resp.read()
+    try:
+        result = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        result = {}
+    return resp.status, result
+
+
 def get_docker_version() -> str:
-    # Try docker socket via env var passed from host, or docker CLI if present
     version = os.environ.get("DOCKER_VERSION")
     if version:
         return version
-    if shutil.which("docker"):
-        try:
-            result = subprocess.run(
-                ["docker", "--version"],
-                capture_output=True, text=True, timeout=2
-            )
-            return result.stdout.strip().split()[2].rstrip(",")
-        except Exception:
-            pass
+    try:
+        status, info = _docker("GET", "/version")
+        if status == 200:
+            return info.get("Version", "unknown")
+    except Exception:
+        pass
     return "unknown"
 
 
@@ -133,20 +198,39 @@ def run_service(image: str, service_port: int) -> str:
     """Pull and run service container (no published ports). Idempotent. Returns container IP."""
     global _service_container_id, _service_image
     name = f"svc_{VOLUNTEER_ID}"
-    subprocess.run(["docker", "rm", "-f", name],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["docker", "pull", image], check=True)
-    run_result = subprocess.run([
-        "docker", "run", "-d", "--restart", "unless-stopped", "--name", name, image
-    ], capture_output=True, text=True, check=True)
-    _service_container_id = run_result.stdout.strip()
+
+    _docker("DELETE", f"/containers/{urllib.parse.quote(name, safe='')}?force=true")
+
+    print(f"[agent] Pulling {image}…")
+    status, _ = _docker("POST", f"/images/create?fromImage={urllib.parse.quote(image, safe='/:@.')}", timeout=300)
+    if status != 200:
+        raise RuntimeError(f"docker pull {image} failed: HTTP {status}")
+
+    host_config = _service_host_config()
+    if SERVICE_CPUS or SERVICE_MEMORY:
+        print(f"[agent] Service limits: cpus={SERVICE_CPUS or '—'} memory={SERVICE_MEMORY or '—'}")
+    status, resp = _docker("POST", f"/containers/create?name={urllib.parse.quote(name)}", body={
+        "Image": image,
+        "HostConfig": host_config,
+    })
+    if status not in (200, 201):
+        raise RuntimeError(f"docker create failed: {resp}")
+    cid = resp["Id"]
+
+    status, _ = _docker("POST", f"/containers/{cid}/start")
+    if status not in (200, 204):
+        raise RuntimeError(f"docker start failed: HTTP {status}")
+
+    _service_container_id = cid
     _service_image = image
-    ip = subprocess.run(
-        ["docker", "inspect", "-f",
-         "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    return ip
+
+    _, info = _docker("GET", f"/containers/{urllib.parse.quote(name, safe='')}/json")
+    networks = info.get("NetworkSettings", {}).get("Networks", {})
+    for net in networks.values():
+        ip = net.get("IPAddress", "")
+        if ip:
+            return ip
+    return ""
 
 
 def _service_is_running() -> bool:
@@ -154,38 +238,27 @@ def _service_is_running() -> bool:
     if not _service_container_id:
         return False
     try:
-        result = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}}", _service_container_id],
-            capture_output=True, text=True, timeout=5,
-        )
-        return result.returncode == 0 and result.stdout.strip() == "true"
+        status, info = _docker("GET", f"/containers/{_service_container_id}/json", timeout=5)
+        return status == 200 and info.get("State", {}).get("Running", False)
     except Exception:
         return False
 
 
-def _restart_tunnel_client() -> int:
-    """Kill current tunnel client, start a fresh one, and return the new public port."""
-    try:
-        os.remove(TUNNEL_PUBLIC_PORT_FILE)
-    except FileNotFoundError:
-        pass
-    subprocess.run(["pkill", "-f", "/app/client"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1)
-    subprocess.Popen(["/app/client"])
-    return wait_for_tunnel_public_port()
+def apply_service_assignment(image: str, service_port: int) -> None:
+    """Run the service container and point the tunnel's local target at it.
 
-
-def apply_service_assignment(image: str, service_port: int) -> int:
-    """Run service container, update LOCAL_SERVICE_ADDR, restart tunnel. Returns new public port."""
+    The tunnel client re-reads LOCAL_SERVICE_ADDR for every stream, so writing the
+    file is enough — no client restart. That keeps the volunteer's public tunnel
+    port stable, so the HAProxy svc_* and volunteers backends (already pointed at
+    that port by the registrar at enroll/assign time) stay correct.
+    """
     print(f"[agent] Starting service image={image} port={service_port}")
     ip = run_service(image, service_port)
     addr = f"{ip}:{service_port}"
     print(f"[agent] Service container up at {addr}")
     with open(LOCAL_SERVICE_ADDR_FILE, "w") as f:
         f.write(addr)
-    print(f"[agent] LOCAL_SERVICE_ADDR set to {addr}")
-    return _restart_tunnel_client()
+    print(f"[agent] LOCAL_SERVICE_ADDR set to {addr} — tunnel will use it on the next request")
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -305,6 +378,13 @@ def heartbeat_loop(vid: str, tunnel_public_port: int):
         if resp:
             weight = round(100 - (cpu * 0.6 + mem * 0.4), 1)
             print(f"[agent] Heartbeat sent — cpu={cpu}% mem={mem}% weight={weight}")
+            assignment = resp.get("assignment")
+            if assignment and not _service_is_running():
+                print(f"[agent] Assignment received via heartbeat — image={assignment.get('image')}")
+                try:
+                    apply_service_assignment(assignment["image"], assignment["service_port"])
+                except Exception as e:
+                    print(f"[agent] Failed to apply assignment from heartbeat: {e}")
 
         elif last_status_code() == 404:
             # Registrar lost state (e.g. restarted) — re-enroll.
@@ -323,6 +403,8 @@ def heartbeat_loop(vid: str, tunnel_public_port: int):
                     time.sleep(backoff)
                     backoff = min(backoff * 2, 30)
             current_vid, assignment = enroll_result
+            global VOLUNTEER_ID
+            VOLUNTEER_ID = current_vid
             print(f"[agent] Re-enrolled — new volunteer_id={current_vid}")
             if assignment:
                 try:

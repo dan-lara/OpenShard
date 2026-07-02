@@ -84,7 +84,7 @@ fn main() {
                     continue;
                 }
 
-                run_session(ctrl, data_port, &local_addr);
+                run_session(ctrl, data_port);
 
                 // Remove the port file so the Python agent doesn't use a
                 // stale value if we reconnect with a different port.
@@ -98,7 +98,7 @@ fn main() {
 
 // ── session loop ──────────────────────────────────────────────────────────────
 
-fn run_session(mut ctrl: TcpStream, data_port: u16, local_addr: &str) {
+fn run_session(mut ctrl: TcpStream, data_port: u16) {
     let mut ctrl_write = match ctrl.try_clone() {
         Ok(c) => c,
         Err(e) => { println!("[client] clone failed: {e}"); return; }
@@ -120,8 +120,7 @@ fn run_session(mut ctrl: TcpStream, data_port: u16, local_addr: &str) {
             }
             proto::TAG_OPEN => {
                 println!("[client] OPEN stream {stream_id}");
-                let addr = local_addr.to_string();
-                thread::spawn(move || handle_stream(stream_id, data_port, addr));
+                thread::spawn(move || handle_stream(stream_id, data_port));
             }
             proto::TAG_CLOSE => {
                 println!("[client] CLOSE stream {stream_id}");
@@ -133,8 +132,12 @@ fn run_session(mut ctrl: TcpStream, data_port: u16, local_addr: &str) {
 
 // ── per-stream handler ────────────────────────────────────────────────────────
 
-fn handle_stream(stream_id: u16, data_port: u16, local_addr: String) {
+fn handle_stream(stream_id: u16, data_port: u16) {
     let server = server_addr();
+    // Read the local service address fresh for every stream so a new target
+    // written by the agent (after a service assignment) takes effect on the next
+    // request — no tunnel restart, so the public port stays stable for this node.
+    let local_addr = local_service_addr();
     let mut server_data = match TcpStream::connect((server.as_str(), data_port)) {
         Ok(s)  => s,
         Err(e) => { println!("[client] stream {stream_id}: data port connect failed: {e}"); return; }

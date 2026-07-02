@@ -18,12 +18,12 @@ RUN cargo build --release
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — Python + Nginx Runtime
+# Stage 2 — Runtime (plain Alpine + nginx + python3)
+# docker-cli is NOT needed: agent.py talks to the Docker socket via HTTP stdlib
 # ─────────────────────────────────────────────────────────────────────────────
-FROM python:3.12-alpine
+FROM alpine:3.21
 
-# Install Nginx and Docker CLI (agent.py manages service containers via the host socket)
-RUN apk add --no-cache nginx docker-cli
+RUN apk add --no-cache nginx python3
 
 # Nginx config uses a placeholder replaced at runtime by entrypoint
 RUN printf 'server {\n    listen SERVICE_PORT_PLACEHOLDER;\n    root /usr/share/nginx/html;\n    index index.html;\n    location /health {\n        return 200 "ok";\n        add_header Content-Type text/plain;\n    }\n}\n' > /etc/nginx/http.d/default.conf
