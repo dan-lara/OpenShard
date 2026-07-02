@@ -1,10 +1,13 @@
 # OpenShard — Local Development Makefile
 # Usage: make <target>
 
-REGISTRAR_BIN     := target/release/registrar
 VOLUNTEER_IMAGE   := openshard/volunteer
 VOLUNTEER_PORT    := 8080
 REGISTRAR_PORT    := 3000
+CORE_SERVER_DIR   := src/core-server
+REGISTRY          := 10.10.10.10:5000
+SVC_DIR           := src/shard-node/container/test-service
+CONTROLLER_API    := http://10.10.10.10:$(REGISTRAR_PORT)
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 BOLD  := \033[1m
@@ -12,7 +15,8 @@ RESET := \033[0m
 GREEN := \033[32m
 CYAN  := \033[36m
 
-.PHONY: help build build-release run-server run-vol vol-build vol-run test clean fmt lint
+.PHONY: help build build-release run-server vol-build vol-run vol-stop vol-logs \
+        svc-build svc-push svc-register test clean fmt lint deploy
 
 # ── Default ───────────────────────────────────────────────────────────────────
 help:
@@ -25,6 +29,10 @@ help:
 	@echo "  $(CYAN)vol-build$(RESET)      Build volunteer Docker image"
 	@echo "  $(CYAN)vol-run$(RESET)        Run volunteer container on :$(VOLUNTEER_PORT)"
 	@echo "  $(CYAN)vol-stop$(RESET)       Stop volunteer container"
+	@echo "  $(CYAN)svc-build$(RESET)      Build the 3 test service images"
+	@echo "  $(CYAN)svc-push$(RESET)       Build + push test services to internal registry"
+	@echo "  $(CYAN)svc-register$(RESET)   Register test services with the controller API"
+	@echo "  $(CYAN)deploy$(RESET)         Build core-server Docker images"
 	@echo "  $(CYAN)test$(RESET)           Run all tests"
 	@echo "  $(CYAN)fmt$(RESET)            Format all code"
 	@echo "  $(CYAN)lint$(RESET)           Run clippy"
@@ -88,15 +96,37 @@ clean:
 	@echo "$(BOLD)Cleaning build artifacts...$(RESET)"
 	cargo clean
 
+# ── Test services ─────────────────────────────────────────────────────────────
+svc-build:
+	@echo "$(BOLD)Building test service images...$(RESET)"
+	docker build --build-arg PAGE=index.html     -t $(REGISTRY)/svc-index:latest $(SVC_DIR)
+	docker build --build-arg PAGE=service-a.html -t $(REGISTRY)/svc-a:latest     $(SVC_DIR)
+	docker build --build-arg PAGE=service-b.html -t $(REGISTRY)/svc-b:latest     $(SVC_DIR)
+
+svc-push: svc-build
+	@echo "$(BOLD)Pushing test services to registry $(REGISTRY)...$(RESET)"
+	docker push $(REGISTRY)/svc-index:latest
+	docker push $(REGISTRY)/svc-a:latest
+	docker push $(REGISTRY)/svc-b:latest
+	@echo "$(GREEN)Done. Run 'make svc-register' to register them with the controller.$(RESET)"
+
+svc-register:
+	@echo "$(BOLD)Registering test services with controller...$(RESET)"
+	curl -s -X POST $(CONTROLLER_API)/services \
+		-H 'Content-Type: application/json' \
+		-d '{"name":"svc-index","domain":"openshard.danlara.com.br","image":"$(REGISTRY)/svc-index:latest","port":80}' \
+		| python3 -m json.tool
+	curl -s -X POST $(CONTROLLER_API)/services \
+		-H 'Content-Type: application/json' \
+		-d '{"name":"svc-a","domain":"svc-a.openshard.danlara.com.br","image":"$(REGISTRY)/svc-a:latest","port":80}' \
+		| python3 -m json.tool
+	curl -s -X POST $(CONTROLLER_API)/services \
+		-H 'Content-Type: application/json' \
+		-d '{"name":"svc-b","domain":"svc-b.openshard.danlara.com.br","image":"$(REGISTRY)/svc-b:latest","port":80}' \
+		| python3 -m json.tool
+
 # ── Deploy ────────────────────────────────────────────────────────────────────
-build-deploy:
-	@echo "$(BOLD)Building release binary...$(RESET)"
-	bash scripts/build.sh
-
-deploy: build-deploy
-	@echo "$(BOLD)Deploying to Proxmox...$(RESET)"
-	bash scripts/deploy.sh
-
-deploy-only:
-	@echo "$(BOLD)Deploying without rebuild...$(RESET)"
-	bash scripts/deploy.sh
+deploy:
+	@echo "$(BOLD)Building core-server Docker images...$(RESET)"
+	docker compose -f $(CORE_SERVER_DIR)/docker-compose.yml build
+	@echo "$(GREEN)Images built. Transfer and run with: docker compose up -d$(RESET)"
