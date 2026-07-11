@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::db::Db;
@@ -13,7 +14,7 @@ pub const HEARTBEAT_TIMEOUT_SECS: i64 = 45;
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 
 /// Static info sent once at enrollment
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HandshakeInfo {
     pub hostname: String,
     pub os: String,
@@ -29,7 +30,7 @@ pub struct HandshakeInfo {
 }
 
 /// Live metrics updated on every heartbeat
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Metrics {
     pub cpu_pct: f32,
     pub mem_pct: f32,
@@ -48,7 +49,7 @@ impl Metrics {
 }
 
 /// A service that has been assigned to a volunteer
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServiceAssignment {
     pub service_name: String,
     pub domain: String,
@@ -68,7 +69,7 @@ pub struct PendingService {
 }
 
 /// Full state of a registered volunteer
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct VolunteerState {
     pub id: Uuid,
     pub info: HandshakeInfo,

@@ -6,10 +6,11 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::state::{AppState, PendingService, ServiceAssignment};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterServiceRequest {
     pub name: String,
     pub domain: String,
@@ -17,7 +18,7 @@ pub struct RegisterServiceRequest {
     pub port: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RegisterServiceResponse {
     pub backend: String,
     pub domain: String,
@@ -27,6 +28,16 @@ pub struct RegisterServiceResponse {
 /// POST /services
 /// Registers a new service. Assigns it to the best free volunteer immediately,
 /// or queues it as pending if none are available.
+#[utoipa::path(
+    post,
+    path = "/services",
+    tag = "services",
+    request_body = RegisterServiceRequest,
+    responses(
+        (status = 201, description = "Service registered; assigned to a volunteer or queued as pending", body = RegisterServiceResponse),
+        (status = 500, description = "HAProxy assignment failed")
+    )
+)]
 pub async fn register_service(
     State(state): State<AppState>,
     Json(body): Json<RegisterServiceRequest>,
@@ -113,6 +124,15 @@ pub async fn register_service(
 
 /// GET /services
 /// Returns the list of service backends currently registered in HAProxy.
+#[utoipa::path(
+    get,
+    path = "/services",
+    tag = "services",
+    responses(
+        (status = 200, description = "Service backends currently registered in HAProxy"),
+        (status = 500, description = "Failed to read HAProxy config")
+    )
+)]
 pub async fn list_services() -> impl IntoResponse {
     match haproxy_manager::list_services().await {
         Ok(services) => (

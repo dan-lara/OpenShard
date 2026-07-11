@@ -13,6 +13,7 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::state::{
@@ -34,7 +35,7 @@ async fn resolve_tunnel_ip(tunnel_host: &str) -> String {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct EnrollRequest {
     #[serde(flatten)]
     pub info: HandshakeInfo,
@@ -44,20 +45,20 @@ pub struct EnrollRequest {
     pub tunnel_public_port: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AssignmentPayload {
     pub image: String,
     pub service_port: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EnrollResponse {
     pub volunteer_id: String,
     pub heartbeat_interval_seconds: u64,
     pub assignment: Option<AssignmentPayload>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct HeartbeatRequest {
     pub volunteer_id: Uuid,
     pub cpu_pct: f32,
@@ -70,7 +71,7 @@ pub struct HeartbeatRequest {
     pub service_image: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
     pub code: String,
@@ -83,6 +84,15 @@ fn err(msg: &str, code: &str) -> Json<ErrorResponse> {
     })
 }
 
+#[utoipa::path(
+    post,
+    path = "/enroll",
+    tag = "volunteers",
+    request_body = EnrollRequest,
+    responses(
+        (status = 201, description = "Volunteer enrolled (new or re-attached)", body = EnrollResponse)
+    )
+)]
 pub async fn enroll(
     State(state): State<AppState>,
     Json(body): Json<EnrollRequest>,
@@ -266,6 +276,16 @@ pub async fn enroll(
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/heartbeat",
+    tag = "volunteers",
+    request_body = HeartbeatRequest,
+    responses(
+        (status = 200, description = "Heartbeat accepted; recomputes HAProxy weight and echoes any assignment"),
+        (status = 404, description = "Volunteer not found (registrar lost state; client should re-enroll)", body = ErrorResponse)
+    )
+)]
 pub async fn heartbeat(
     State(state): State<AppState>,
     Json(body): Json<HeartbeatRequest>,
@@ -337,6 +357,17 @@ pub async fn heartbeat(
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/enroll/{id}",
+    tag = "volunteers",
+    params(("id" = String, Path, description = "Volunteer UUID")),
+    responses(
+        (status = 200, description = "Volunteer gracefully disconnected"),
+        (status = 400, description = "Invalid UUID", body = ErrorResponse),
+        (status = 404, description = "Volunteer not found", body = ErrorResponse)
+    )
+)]
 pub async fn disconnect(
     State(state): State<AppState>,
     Path(id_str): Path<String>,
@@ -381,12 +412,20 @@ pub async fn disconnect(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/volunteers",
+    tag = "volunteers",
+    responses(
+        (status = 200, description = "Active volunteers, sorted by weight descending", body = [VolunteerState])
+    )
+)]
 pub async fn list_volunteers(State(state): State<AppState>) -> impl IntoResponse {
     let active = state.active_volunteers().await;
     Json(active)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTunnelPortRequest {
     pub tunnel_public_port: u16,
 }
@@ -395,6 +434,18 @@ pub struct UpdateTunnelPortRequest {
 /// a service assignment. The tunnel client reconnects and receives a new public
 /// port; this endpoint propagates that new address to HAProxy so both the
 /// `volunteers` backend and the `svc_*` backend stay current.
+#[utoipa::path(
+    post,
+    path = "/volunteers/{id}/tunnel-port",
+    tag = "volunteers",
+    params(("id" = String, Path, description = "Volunteer UUID")),
+    request_body = UpdateTunnelPortRequest,
+    responses(
+        (status = 200, description = "Tunnel address updated in HAProxy"),
+        (status = 400, description = "Invalid UUID", body = ErrorResponse),
+        (status = 404, description = "Volunteer not found", body = ErrorResponse)
+    )
+)]
 pub async fn update_tunnel_port(
     State(state): State<AppState>,
     Path(id_str): Path<String>,

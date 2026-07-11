@@ -14,6 +14,48 @@ use axum::{
 use chrono::Utc;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use state::AppState;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
+
+/// OpenAPI definition for the registrar's HTTP API, served at `/swagger-ui`
+/// with the raw spec at `/api-docs/openapi.json`.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "OpenShard Registrar API",
+        version = "0.1.0",
+        description = "Controller API for enrolling volunteer nodes, receiving \
+            heartbeats, and registering service backends."
+    ),
+    paths(
+        enrollment::enroll,
+        enrollment::heartbeat,
+        enrollment::disconnect,
+        enrollment::list_volunteers,
+        enrollment::update_tunnel_port,
+        services::register_service,
+        services::list_services,
+    ),
+    components(schemas(
+        state::HandshakeInfo,
+        state::Metrics,
+        state::ServiceAssignment,
+        state::VolunteerState,
+        enrollment::EnrollRequest,
+        enrollment::EnrollResponse,
+        enrollment::AssignmentPayload,
+        enrollment::HeartbeatRequest,
+        enrollment::ErrorResponse,
+        enrollment::UpdateTunnelPortRequest,
+        services::RegisterServiceRequest,
+        services::RegisterServiceResponse,
+    )),
+    tags(
+        (name = "volunteers", description = "Volunteer node lifecycle"),
+        (name = "services", description = "Service registration and routing")
+    )
+)]
+struct ApiDoc;
 
 /// Block until HAProxy's admin socket appears (up to ~15s), so runtime API
 /// calls made during crash recovery don't fail with "No such file or directory".
@@ -138,6 +180,7 @@ async fn main() {
         .route("/services", post(services::register_service))
         .route("/services", get(services::list_services))
         .route("/metrics", get(metrics_handler::metrics_handler))
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
 
     let addr = "0.0.0.0:3000";
