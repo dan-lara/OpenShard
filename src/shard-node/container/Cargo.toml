@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "reverse-tunnel"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "client"
+path = "client.rs"
+
+[dependencies]
+ureq = { version = "2", features = ["json"] }
+serde_json = "1.0"

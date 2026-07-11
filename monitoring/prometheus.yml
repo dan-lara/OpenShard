@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          app: "prometheus"
+
+  - job_name: "openshrd-service"
+    static_configs:
+      - targets: ["<controller-ip>:3000"]
+        labels:
+          app: "openshrd"
+
+  - job_name: "haproxy"
+    static_configs:
+      - targets: ["<controller-ip>:8405"]
+        labels:
+          app: "haproxy"
+
+  - job_name: "node_controller"
+    static_configs:
+      - targets: ["<controller-ip>:9100"]
+        labels:
+          app: "controller"
