@@ -36,3 +36,7 @@ src/core-server/get-docker.sh
 # Generated load-test outputs (keep the dir via .gitkeep)
 experiments/results/*.json
 experiments/results/*.md
+
+# Internal planning/handoff docs (kept locally, not tracked)
+docs/handoff-network-and-agent-rewrite.md
+docs/Implementation_Doc.md
